@@ -1,0 +1,17 @@
+# e2e: build the RPM from the spec + source tarball on Fedora, install it,
+# and run the full test cycle.
+FROM fedora:latest
+ARG VERSION=0.0.0
+RUN dnf install -y rpm-build acl sudo shadow-utils && dnf clean all
+COPY dist/asb-${VERSION}.tar.gz /root/rpmbuild/SOURCES/
+COPY packaging/rpm/asb.spec /root/rpmbuild/SPECS/asb.spec
+RUN sed -i "s/^Version:.*/Version:        ${VERSION}/" /root/rpmbuild/SPECS/asb.spec \
+    && rpmbuild -bb /root/rpmbuild/SPECS/asb.spec \
+    && dnf install -y /root/rpmbuild/RPMS/noarch/asb-${VERSION}-*.rpm \
+    && rm -rf /root/rpmbuild
+RUN useradd -m -s /bin/bash dev \
+    && echo 'dev ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/dev
+COPY tests/e2e.sh /usr/local/share/asb-tests/e2e.sh
+USER dev
+WORKDIR /home/dev
+CMD ["bash", "/usr/local/share/asb-tests/e2e.sh"]

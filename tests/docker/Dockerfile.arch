@@ -1,0 +1,19 @@
+# e2e: build the package from the PKGBUILD + local source tarball on Arch,
+# install it with pacman, and run the full test cycle. makepkg finds the
+# tarball already present in the build dir, so no network fetch happens.
+FROM archlinux:base-devel
+ARG VERSION=0.0.0
+RUN pacman -Sy --noconfirm acl sudo && pacman -Scc --noconfirm
+RUN useradd -m -s /bin/bash build \
+    && echo 'build ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/build
+COPY --chown=build packaging/aur/PKGBUILD /home/build/pkg/PKGBUILD
+COPY --chown=build dist/asb-${VERSION}.tar.gz /home/build/pkg/asb-${VERSION}.tar.gz
+RUN sed -i "s/^pkgver=.*/pkgver=${VERSION}/" /home/build/pkg/PKGBUILD \
+    && su build -c "cd /home/build/pkg && makepkg --noconfirm" \
+    && pacman -U --noconfirm /home/build/pkg/asb-${VERSION}-*.pkg.tar.zst
+RUN useradd -m -s /bin/bash dev \
+    && echo 'dev ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/dev
+COPY tests/e2e.sh /usr/local/share/asb-tests/e2e.sh
+USER dev
+WORKDIR /home/dev
+CMD ["bash", "/usr/local/share/asb-tests/e2e.sh"]

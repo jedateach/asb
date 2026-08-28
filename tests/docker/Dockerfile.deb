@@ -1,0 +1,14 @@
+# e2e: install the built .deb on Ubuntu and run the full test cycle.
+FROM ubuntu:24.04
+ARG VERSION=0.0.0
+ARG DEBIAN_FRONTEND=noninteractive
+COPY dist/asb_${VERSION}_all.deb /tmp/asb.deb
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/asb.deb \
+    && rm -rf /var/lib/apt/lists/* /tmp/asb.deb
+RUN useradd -m -s /bin/bash dev \
+    && echo 'dev ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/dev
+COPY tests/e2e.sh /usr/local/share/asb-tests/e2e.sh
+USER dev
+WORKDIR /home/dev
+CMD ["bash", "/usr/local/share/asb-tests/e2e.sh"]

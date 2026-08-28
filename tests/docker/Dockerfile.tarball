@@ -1,0 +1,18 @@
+# e2e: install from the source tarball via install.sh on Debian and run the
+# full test cycle. Deliberately a different distro than the deb test.
+FROM debian:stable-slim
+ARG VERSION=0.0.0
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends acl sudo passwd \
+    && rm -rf /var/lib/apt/lists/*
+COPY dist/asb-${VERSION}.tar.gz /tmp/
+RUN tar -C /tmp -xzf /tmp/asb-${VERSION}.tar.gz \
+    && /tmp/asb-${VERSION}/install.sh \
+    && rm -rf /tmp/asb-${VERSION}*
+RUN useradd -m -s /bin/bash dev \
+    && echo 'dev ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/dev
+COPY tests/e2e.sh /usr/local/share/asb-tests/e2e.sh
+USER dev
+WORKDIR /home/dev
+CMD ["bash", "/usr/local/share/asb-tests/e2e.sh"]
