@@ -1,0 +1,13 @@
+Package: asb
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: all
+Depends: bash, acl, sudo, passwd
+Maintainer: Colin Campbell <coder@colin.geek.nz>
+Homepage: https://github.com/geeknz/asb
+Description: Run AI coding agents in kernel-enforced sandboxes
+ asb runs AI coding agents (Claude Code, Hermes, ...) as dedicated
+ locked-down OS accounts. Project access is granted per directory with
+ POSIX ACLs, so the kernel - not application config - enforces what an
+ agent can read or write.

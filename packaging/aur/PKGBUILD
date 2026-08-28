@@ -1,0 +1,20 @@
+# Maintainer: Colin Campbell <coder@colin.geek.nz>
+pkgname=asb
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Run AI coding agents in kernel-enforced sandboxes"
+arch=('any')
+url="https://github.com/geeknz/asb"
+license=('MIT')
+depends=('bash' 'acl' 'sudo')
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm0755 bin/asb "$pkgdir/usr/bin/asb"
+    install -Dm0644 docs/asb.1 "$pkgdir/usr/share/man/man1/asb.1"
+    install -Dm0644 completions/asb.bash "$pkgdir/usr/share/bash-completion/completions/asb"
+    install -Dm0644 completions/_asb "$pkgdir/usr/share/zsh/site-functions/_asb"
+    install -Dm0644 README.md "$pkgdir/usr/share/doc/asb/README.md"
+}
