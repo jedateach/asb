@@ -42,6 +42,11 @@ e2e failure, rebuild that one image and run it interactively, e.g.:
 - **ACL ordering is load-bearing**: on Linux the group permission bits of a file with
   an ACL _are_ the ACL mask. `chmod -R go-rwx` after `setfacl` would zero the mask and
   silently disable every grant. Always tighten (chmod) first, grant (setfacl) second.
+- **`pipefail` is on everywhere**: `bin/asb` and both test scripts run under
+  `set -euo pipefail`. Never pipe into a consumer that exits early (`head`,
+  `grep -q`) — the producer takes SIGPIPE, `pipefail` promotes 141 to the
+  pipeline's status, and the failure reads as a wrong result rather than a broken
+  pipe. Capture into a variable and match with a here-string instead.
 - **Agent installs**: `agent_installer()` holds the one-liner that fetches a known
   agent CLI, keyed on the _binary_ (first word of the `agents.conf` command), and
   `asb create` offers to run it. That `curl` runs inside the sandbox, so it is not an

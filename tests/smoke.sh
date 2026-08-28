@@ -52,6 +52,10 @@ t_fail "use unknown sandbox fails"    "$ASB" use nope
 t_fail "delete unknown sandbox fails" "$ASB" -y delete nope
 t_fail "invalid sandbox name rejected" "$ASB" create 'Bad Name!'
 
+# pipefail + an early-exiting consumer = spurious SIGPIPE failures (see AGENTS.md)
+t_fail "no SIGPIPE-prone pipelines in asb" \
+    grep -qE '\| *(head|grep -q)' "$ASB"
+
 # list with nothing configured
 t "empty list exits 0" "$ASB" list
 

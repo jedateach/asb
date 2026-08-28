@@ -155,7 +155,9 @@ default_agent_for() {  # default_agent_for <sandbox>
     local agent
     agent=$(config_get "$CONFIG_ROOT/$1/config" agent)
     [[ -n "$agent" ]] || agent=$(config_get "$CONFIG_FILE" default_agent)
-    [[ -n "$agent" ]] || agent=$(agent_names | head -n 1)
+    # awk, not 'head -n 1': head exits after one line and the producer takes
+    # SIGPIPE, which pipefail turns into a fatal error under set -e.
+    [[ -n "$agent" ]] || agent=$(agent_names | awk 'NR==1')
     [[ -n "$agent" ]] || die "no agents configured in $AGENTS_FILE"
     printf '%s' "$agent"
 }
@@ -194,7 +196,11 @@ apply_grants() {  # apply_grants <acct> <dir>
     # re-ACL'ed by us; they already carry both ACLs via inheritance.
     setfacl -R -m "u:$acct:rwX,d:u:$acct:rwX,u:$USER:rwX,d:u:$USER:rwX" "$dir" 2>/dev/null || \
         warn "files not owned by you kept their existing ACLs"
-    getfacl -p "$dir" 2>/dev/null | grep -q "^user:$acct:" || \
+    # Capture before matching: 'grep -q' exits mid-stream, getfacl takes SIGPIPE
+    # and pipefail would report that as a missing ACL.
+    local acl
+    acl=$(getfacl -p "$dir" 2>/dev/null) || true
+    grep -q "^user:$acct:" <<< "$acl" || \
         die "failed to apply ACLs on $dir (filesystem without ACL support?)"
 }
 
@@ -626,7 +632,8 @@ cmd_doctor() {
     local probe
     probe=$(mktemp -p "$PWD" .asb-doctor.XXXXXX 2>/dev/null) || probe=""
     if [[ -n "$probe" ]]; then
-        if setfacl -m "u:$USER:r" "$probe" 2>/dev/null && getfacl "$probe" 2>/dev/null | grep -q "user:$USER"; then
+        if setfacl -m "u:$USER:r" "$probe" 2>/dev/null &&
+           grep -q "user:$USER" <<< "$(getfacl "$probe" 2>/dev/null)"; then
             printf '  ok    filesystem at %s supports POSIX ACLs\n' "$PWD"; ok=$((ok+1))
         else
             printf '  FAIL  filesystem at %s does not support POSIX ACLs (NFS/FAT?)\n' "$PWD"; fail=$((fail+1))
