@@ -4,6 +4,13 @@ VERSION ?= 0.0.0
 PREFIX  ?= /usr/local
 DIST    := dist
 
+# Staging dirs inherit whatever bits the build host hands out: under a parent
+# with a default ACL (any project you have run 'asb add' on) mkdir yields
+# setgid+sticky, and dpkg-deb rejects a DEBIAN directory outside 0755-0775.
+# Normalise so a package built anywhere is the package CI builds. 'a-st' is
+# load-bearing: a numeric chmod leaves the inherited setgid bit in place.
+normalise_dirs = find $(1) -type d -exec chmod a-st,u=rwx,go=rx {} +
+
 .PHONY: all lint smoke install uninstall dist deb rpm pkgbuild release \
         test-deb test-tarball test-rpm test-arch test-all clean
 
@@ -30,6 +37,7 @@ dist:
 	mkdir -p $(DIST)/asb-$(VERSION)
 	cp -r bin completions docs install.sh README.md LICENSE $(DIST)/asb-$(VERSION)/
 	sed -i 's/^ASB_VERSION=.*/ASB_VERSION="$(VERSION)"/' $(DIST)/asb-$(VERSION)/bin/asb
+	$(call normalise_dirs,$(DIST)/asb-$(VERSION))
 	tar -C $(DIST) -czf $(DIST)/asb-$(VERSION).tar.gz asb-$(VERSION)
 	rm -rf $(DIST)/asb-$(VERSION)
 	@echo "built $(DIST)/asb-$(VERSION).tar.gz"
@@ -52,6 +60,7 @@ deb:
 	install -m 0644 README.md $(DIST)/debroot/usr/share/doc/asb/README.md
 	install -m 0644 LICENSE $(DIST)/debroot/usr/share/doc/asb/copyright
 	sed 's/@VERSION@/$(VERSION)/' packaging/deb/control.in > $(DIST)/debroot/DEBIAN/control
+	$(call normalise_dirs,$(DIST)/debroot)
 	dpkg-deb --root-owner-group --build $(DIST)/debroot $(DIST)/asb_$(VERSION)_all.deb
 	rm -rf $(DIST)/debroot
 	@echo "built $(DIST)/asb_$(VERSION)_all.deb"
