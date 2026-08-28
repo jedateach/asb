@@ -1,0 +1,71 @@
+#compdef asb
+# zsh completion for asb
+
+_asb_sandboxes() {
+    local config_root="${XDG_CONFIG_HOME:-$HOME/.config}/asb" d
+    local -a names
+    for d in "$config_root"/*(/N); do
+        names+=("${d:t}")
+    done
+    _describe 'sandbox' names
+}
+
+_asb_agents() {
+    local config_root="${XDG_CONFIG_HOME:-$HOME/.config}/asb"
+    local -a names
+    [[ -f "$config_root/agents.conf" ]] &&
+        names=(${(f)"$(sed -n 's/^\([A-Za-z0-9_-]\+\)=.*/\1/p' "$config_root/agents.conf")"})
+    _describe 'agent' names
+}
+
+_asb() {
+    local -a commands
+    commands=(
+        'create:create a sandbox'
+        'delete:delete a sandbox'
+        'use:set the default sandbox'
+        'list:show sandboxes and grants'
+        'add:grant access to a directory'
+        'remove:revoke access to a directory'
+        'recover:re-apply all grants from config'
+        'launch:launch an agent in a sandbox'
+        'lockdown:harden your home directory'
+        'doctor:diagnose sandbox setup'
+    )
+
+    _arguments -C \
+        '-s+[sandbox to use]:sandbox:_asb_sandboxes' \
+        '(-y --yes)'{-y,--yes}'[assume yes on prompts]' \
+        '(-h --help)'{-h,--help}'[show help]' \
+        '--version[print version]' \
+        '1:command:->cmd' \
+        '*::arg:->args'
+
+    case "$state" in
+        cmd)
+            _describe 'command' commands
+            ;;
+        args)
+            case "${line[1]}" in
+                delete|use|list)
+                    _asb_sandboxes
+                    ;;
+                launch)
+                    if (( CURRENT == 2 )); then
+                        _alternative 'sandboxes:sandbox:_asb_sandboxes' 'agents:agent:_asb_agents'
+                    else
+                        _asb_agents
+                    fi
+                    ;;
+                add|remove)
+                    _files -/
+                    ;;
+                create)
+                    _arguments '--agent[default agent]:agent:_asb_agents'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_asb "$@"

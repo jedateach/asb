@@ -1,0 +1,537 @@
+#!/usr/bin/env bash
+# asb — agent sandbox. Run AI coding agents as locked-down OS accounts.
+#
+# A sandbox is a named isolated environment backed by a dedicated OS account.
+# asb creates sandboxes, grants them access to specific project directories
+# via POSIX ACLs, and launches agents inside them. The kernel enforces the
+# boundary; there is no application-level allowlist to misparse or disable.
+set -euo pipefail
+
+ASB_VERSION="0.0.0-dev"
+
+CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/asb"
+CONFIG_FILE="$CONFIG_ROOT/config"
+AGENTS_FILE="$CONFIG_ROOT/agents.conf"
+
+SANDBOX_OVERRIDE=""
+ASSUME_YES="${ASB_ASSUME_YES:-}"
+
+# ---------------------------------------------------------------- utilities
+
+die()  { printf 'asb: error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'asb: warning: %s\n' "$*" >&2; }
+info() { printf '%s\n' "$*"; }
+
+confirm() {
+    [[ -n "$ASSUME_YES" ]] && return 0
+    local reply
+    read -r -p "$1 [y/N] " reply
+    [[ "$reply" == y || "$reply" == Y ]]
+}
+
+usage() {
+    cat <<EOF
+asb $ASB_VERSION — run AI coding agents in kernel-enforced sandboxes
+
+Usage: asb [-s <sandbox>] [-y] <command> [args]
+
+Sandboxes:
+  create <name> [--agent <agent>]   Create a sandbox (a dedicated OS account)
+  delete <name> [--purge]           Delete a sandbox (--purge also removes its home)
+  use <name>                        Set the default sandbox
+  list [name]                       Show sandboxes and their granted directories
+
+Directory grants (apply to the default sandbox, or -s <sandbox>):
+  add [dir]                         Grant access to a directory (default: .)
+  remove [dir]                      Revoke access to a directory (default: .)
+  recover                           Re-apply all grants from config (after ACL loss)
+
+Running agents:
+  launch [sandbox] [agent] [-- args]
+                                    Launch an agent here, inside a sandbox.
+                                    Everything is defaultable: 'asb launch' uses
+                                    the default sandbox and its default agent.
+
+Host hardening & diagnostics:
+  lockdown                          chmod go-rwx your \$HOME + set umask 077
+  doctor                            Check ACL support, sudoers, agent availability
+
+Options:
+  -s <sandbox>    Use this sandbox instead of the default
+  -y, --yes       Assume yes on confirmation prompts
+  -h, --help      Show this help
+  --version       Print version
+
+Config: $CONFIG_ROOT
+Agents: $AGENTS_FILE (one per line: name=command line)
+EOF
+}
+
+ensure_config() {
+    mkdir -p "$CONFIG_ROOT"
+    [[ -f "$CONFIG_FILE" ]] || : > "$CONFIG_FILE"
+    if [[ ! -f "$AGENTS_FILE" ]]; then
+        cat > "$AGENTS_FILE" <<'EOF'
+# asb agents: one per line, name=command line to run inside the sandbox.
+# The command runs as the sandbox account, in the current project directory.
+# Permission-prompt skipping is a per-agent choice — the OS boundary holds
+# either way, so pick per agent what you are comfortable with.
+claude=claude --dangerously-skip-permissions
+claude-safe=claude
+hermes=hermes
+EOF
+    fi
+}
+
+config_get() {  # config_get <file> <key>
+    [[ -f "$1" ]] || return 0
+    sed -n "s/^$2=//p" "$1" | tail -n 1
+}
+
+config_set() {  # config_set <file> <key> <value>
+    local tmp
+    tmp=$(mktemp)
+    { [[ -f "$1" ]] && grep -v "^$2=" "$1" || true; printf '%s=%s\n' "$2" "$3"; } > "$tmp"
+    mv "$tmp" "$1"
+}
+
+sandbox_exists() { [[ -d "$CONFIG_ROOT/$1" ]]; }
+
+all_sandboxes() {
+    local d
+    for d in "$CONFIG_ROOT"/*/; do
+        [[ -d "$d" ]] || continue
+        basename "$d"
+    done
+}
+
+# Resolve the sandbox to operate on: -s flag, else default_sandbox.
+current_sandbox() {
+    local sb="${SANDBOX_OVERRIDE:-$(config_get "$CONFIG_FILE" default_sandbox)}"
+    [[ -n "$sb" ]] || die "no sandbox selected. Create one with 'asb create <name>' or pick one with 'asb use <name>'."
+    sandbox_exists "$sb" || die "unknown sandbox '$sb'. See 'asb list'."
+    printf '%s' "$sb"
+}
+
+grant_file() { printf '%s/%s/directories' "$CONFIG_ROOT" "$1"; }
+
+agent_command() {  # agent_command <agent-name>
+    local cmd
+    cmd=$(sed -n "s/^$1=//p" "$AGENTS_FILE" | tail -n 1)
+    [[ -n "$cmd" ]] || die "unknown agent '$1'. Known agents: $(agent_names | paste -sd' ' -)"
+    printf '%s' "$cmd"
+}
+
+agent_names() { sed -n 's/^\([A-Za-z0-9_-]\+\)=.*/\1/p' "$AGENTS_FILE"; }
+
+default_agent_for() {  # default_agent_for <sandbox>
+    local agent
+    agent=$(config_get "$CONFIG_ROOT/$1/config" agent)
+    [[ -n "$agent" ]] || agent=$(config_get "$CONFIG_FILE" default_agent)
+    [[ -n "$agent" ]] || agent=$(agent_names | head -n 1)
+    [[ -n "$agent" ]] || die "no agents configured in $AGENTS_FILE"
+    printf '%s' "$agent"
+}
+
+# ------------------------------------------------------------- ACL plumbing
+
+# Order matters on Linux: chmod on a tree that already has ACLs rewrites the
+# ACL mask (the group bits ARE the mask), so we always tighten with chmod
+# FIRST and grant with setfacl SECOND — setfacl recalculates the mask.
+
+tighten_subtree() {
+    info "Tightening permissions (go-rwx) on: $1"
+    chmod -R go-rwx "$1"
+}
+
+apply_grants() {  # apply_grants <acct> <dir>
+    local acct="$1" dir="$2"
+    info "Granting $acct access to: $dir"
+    setfacl -R -m "u:$acct:rwX,d:u:$acct:rwX,u:$USER:rwX,d:u:$USER:rwX" "$dir"
+}
+
+remove_grants() {  # remove_grants <acct> <dir>
+    info "Revoking $acct access to: $dir"
+    setfacl -R -x "u:$acct" "$dir" 2>/dev/null || true
+    setfacl -R -d -x "u:$acct" "$dir" 2>/dev/null || true
+}
+
+# Give the sandbox account traverse (--x) on every parent directory that it
+# cannot already search, so it can reach the project without reading siblings.
+apply_parent_traverse() {  # apply_parent_traverse <acct> <dir>
+    local acct="$1" current="$2" mode other
+    while true; do
+        current=$(dirname "$current")
+        [[ "$current" == "/" ]] && break
+        mode=$(stat -c "%a" "$current" 2>/dev/null) || continue
+        other="${mode: -1}"
+        # world-execute already allows traversal
+        (( other & 1 )) && continue
+        if ! setfacl -m "u:$acct:--x" "$current" 2>/dev/null; then
+            if ! sudo -n setfacl -m "u:$acct:--x" "$current" 2>/dev/null; then
+                warn "could not add traverse permission on $current — $acct may be unable to reach the project"
+            fi
+        fi
+    done
+}
+
+# Warn when a parent directory is world-readable: the sandbox account could
+# enumerate it and see sibling directories, defeating per-project isolation.
+check_parent_exposure() {  # check_parent_exposure <dir>
+    local current="$1" mode other exposed=()
+    while true; do
+        current=$(dirname "$current")
+        [[ "$current" == "/" || "$current" == "$HOME" ]] && break
+        mode=$(stat -c "%a" "$current" 2>/dev/null) || continue
+        other="${mode: -1}"
+        (( other & 4 )) && exposed+=("$current (mode $mode)")
+    done
+    if [[ ${#exposed[@]} -gt 0 ]]; then
+        warn "parent directories are world-readable; sandboxes can list them and read any world-readable siblings:"
+        local p
+        for p in "${exposed[@]}"; do
+            printf '    %s\n' "$p" >&2
+        done
+        printf '  To close the gap: chmod go-rwx <dir> (or run: asb lockdown)\n' >&2
+    fi
+}
+
+resolve_dir() {
+    local dir="${1:-.}"
+    realpath "$dir" 2>/dev/null || die "cannot resolve directory: $dir"
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_create() {
+    local name="" agent="" arg
+    while [[ $# -gt 0 ]]; do
+        arg="$1"; shift
+        case "$arg" in
+            --agent) agent="${1:-}"; shift || true ;;
+            -*) die "unknown option for create: $arg" ;;
+            *) if [[ -z "$name" ]]; then name="$arg"; else die "create takes one name"; fi ;;
+        esac
+    done
+    [[ -n "$name" ]] || die "usage: asb create <name> [--agent <agent>]"
+    [[ "$name" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid sandbox name '$name' (lowercase letters, digits, - and _)"
+    sandbox_exists "$name" && die "sandbox '$name' already exists"
+    ensure_config
+    [[ -n "$agent" ]] && agent_command "$agent" >/dev/null   # validate early
+
+    if id "$name" >/dev/null 2>&1; then
+        info "OS account '$name' already exists; adopting it."
+    else
+        info "Creating OS account '$name' (needs sudo)…"
+        sudo useradd --create-home --user-group --shell /bin/bash \
+            --comment "asb sandbox" "$name"
+    fi
+    local home
+    home=$(getent passwd "$name" | cut -d: -f6)
+    sudo chmod 700 "$home"
+
+    # Passwordless one-way door: invoker -> sandbox account. Nothing else.
+    local rule tmp
+    rule=$(printf '%s ALL=(%s) NOPASSWD: ALL\n' "$USER" "$name")
+    tmp=$(mktemp)
+    printf '%s\n' "$rule" > "$tmp"
+    sudo visudo -cf "$tmp" >/dev/null || { rm -f "$tmp"; die "generated sudoers rule failed validation"; }
+    sudo install -m 0440 -o root -g root "$tmp" "/etc/sudoers.d/asb-$name"
+    rm -f "$tmp"
+
+    mkdir -p "$CONFIG_ROOT/$name"
+    : > "$(grant_file "$name")"
+    [[ -n "$agent" ]] && config_set "$CONFIG_ROOT/$name/config" agent "$agent"
+    if [[ -z "$(config_get "$CONFIG_FILE" default_sandbox)" ]]; then
+        config_set "$CONFIG_FILE" default_sandbox "$name"
+        info "'$name' is now the default sandbox."
+    fi
+
+    cat <<EOF
+Sandbox '$name' created.
+
+Next steps:
+  1. Install the agent CLI inside it, e.g.:
+       sudo -u $name -i bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
+  2. Grant it a project:   cd ~/code/my-project && asb add
+  3. Launch:               asb launch $name
+EOF
+}
+
+cmd_delete() {
+    local name="" purge="" arg
+    while [[ $# -gt 0 ]]; do
+        arg="$1"; shift
+        case "$arg" in
+            --purge) purge=1 ;;
+            -*) die "unknown option for delete: $arg" ;;
+            *) if [[ -z "$name" ]]; then name="$arg"; else die "delete takes one name"; fi ;;
+        esac
+    done
+    [[ -n "$name" ]] || die "usage: asb delete <name> [--purge]"
+    sandbox_exists "$name" || die "unknown sandbox '$name'"
+
+    confirm "Delete sandbox '$name'${purge:+ AND its OS account + home directory}?" \
+        || die "aborted"
+
+    # Best-effort: drop this sandbox's ACLs from its granted directories.
+    local dir
+    while IFS= read -r dir; do
+        [[ -d "$dir" ]] && remove_grants "$name" "$dir"
+    done < "$(grant_file "$name")"
+
+    sudo rm -f "/etc/sudoers.d/asb-$name"
+    rm -rf "${CONFIG_ROOT:?}/$name"
+    if [[ -n "$purge" ]] && id "$name" >/dev/null 2>&1; then
+        sudo userdel -r "$name"
+        info "OS account '$name' and its home removed."
+    fi
+    if [[ "$(config_get "$CONFIG_FILE" default_sandbox)" == "$name" ]]; then
+        config_set "$CONFIG_FILE" default_sandbox ""
+        warn "'$name' was the default sandbox; pick a new one with 'asb use <name>'."
+    fi
+    info "Sandbox '$name' deleted."
+}
+
+cmd_use() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "usage: asb use <name>"
+    sandbox_exists "$name" || die "unknown sandbox '$name'. See 'asb list'."
+    ensure_config
+    config_set "$CONFIG_FILE" default_sandbox "$name"
+    info "Default sandbox: $name"
+}
+
+cmd_list() {
+    local only="${1:-}" sb default gf dir agent
+    default=$(config_get "$CONFIG_FILE" default_sandbox)
+    local found=""
+    for sb in $(all_sandboxes); do
+        [[ -n "$only" && "$sb" != "$only" ]] && continue
+        found=1
+        agent=$(default_agent_for "$sb" 2>/dev/null || echo "?")
+        if [[ "$sb" == "$default" ]]; then
+            printf '%s (default, agent: %s)\n' "$sb" "$agent"
+        else
+            printf '%s (agent: %s)\n' "$sb" "$agent"
+        fi
+        gf=$(grant_file "$sb")
+        if [[ -s "$gf" ]]; then
+            while IFS= read -r dir; do printf '    %s\n' "$dir"; done < "$gf"
+        else
+            printf '    (no directories granted)\n'
+        fi
+    done
+    if [[ -z "$found" ]]; then
+        if [[ -n "$only" ]]; then
+            die "unknown sandbox '$only'"
+        else
+            info "No sandboxes yet. Create one with: asb create <name>"
+        fi
+    fi
+}
+
+cmd_add() {
+    local sb dir gf
+    sb=$(current_sandbox)
+    dir=$(resolve_dir "${1:-.}")
+    [[ -d "$dir" ]] || die "not a directory: $dir"
+    gf=$(grant_file "$sb")
+    if grep -qxF "$dir" "$gf" 2>/dev/null; then
+        info "Already granted (re-applying permissions): $dir"
+    else
+        printf '%s\n' "$dir" >> "$gf"
+        info "Granted to $sb: $dir"
+    fi
+    tighten_subtree "$dir"
+    apply_grants "$sb" "$dir"
+    apply_parent_traverse "$sb" "$dir"
+    check_parent_exposure "$dir"
+}
+
+cmd_remove() {
+    local sb dir gf tmp
+    sb=$(current_sandbox)
+    dir=$(resolve_dir "${1:-.}")
+    gf=$(grant_file "$sb")
+    if grep -qxF "$dir" "$gf" 2>/dev/null; then
+        tmp=$(mktemp)
+        grep -vxF "$dir" "$gf" > "$tmp" || true
+        mv "$tmp" "$gf"
+        remove_grants "$sb" "$dir"
+        info "Removed from $sb: $dir"
+    else
+        die "not in the grant list for $sb: $dir"
+    fi
+}
+
+cmd_recover() {
+    local sb dir gf
+    sb=$(current_sandbox)
+    gf=$(grant_file "$sb")
+    [[ -s "$gf" ]] || die "no directories configured for $sb"
+    while IFS= read -r dir; do
+        if [[ -d "$dir" ]]; then
+            tighten_subtree "$dir"
+            apply_grants "$sb" "$dir"
+            apply_parent_traverse "$sb" "$dir"
+        else
+            warn "skipping missing directory: $dir"
+        fi
+    done < "$gf"
+    info "Re-applied all grants for $sb."
+}
+
+cmd_launch() {
+    local sb="" agent="" extra=() arg
+    while [[ $# -gt 0 ]]; do
+        arg="$1"; shift
+        case "$arg" in
+            --) extra=("$@"); break ;;
+            -*) die "unknown option for launch: $arg (pass agent args after --)" ;;
+            *)
+                if [[ -z "$sb" && -z "$agent" ]]; then
+                    # First positional: sandbox if known, else agent.
+                    if sandbox_exists "$arg" && grep -q "^$arg=" "$AGENTS_FILE" 2>/dev/null; then
+                        die "'$arg' names both a sandbox and an agent — rename one, or use: asb -s $arg launch $arg"
+                    elif sandbox_exists "$arg"; then
+                        sb="$arg"
+                    else
+                        agent="$arg"
+                    fi
+                elif [[ -z "$agent" ]]; then
+                    agent="$arg"
+                else
+                    die "too many arguments; pass agent args after --"
+                fi
+                ;;
+        esac
+    done
+    ensure_config
+    [[ -n "$sb" ]] || sb=$(current_sandbox)
+    sandbox_exists "$sb" || die "unknown sandbox '$sb'"
+    [[ -n "$agent" ]] || agent=$(default_agent_for "$sb")
+    local agent_cmd
+    agent_cmd=$(agent_command "$agent")
+
+    local cwd matched="" dir resolved gf
+    cwd=$(pwd -P)
+    gf=$(grant_file "$sb")
+    [[ -s "$gf" ]] || die "no directories granted to '$sb'. Run 'asb add' in your project first."
+    while IFS= read -r dir; do
+        resolved=$(realpath "$dir" 2>/dev/null) || continue
+        if [[ "$cwd" == "$resolved" || "$cwd" == "$resolved"/* ]]; then
+            matched="$resolved"
+            break
+        fi
+    done < "$gf"
+    if [[ -z "$matched" ]]; then
+        {
+            printf 'asb: error: %s is not granted to sandbox %s.\n' "$cwd" "$sb"
+            printf 'Granted directories:\n'
+            sed 's/^/    /' "$gf"
+            printf "To grant it: asb -s %s add\n" "$sb"
+        } >&2
+        exit 1
+    fi
+
+    local extra_q=""
+    [[ ${#extra[@]} -gt 0 ]] && extra_q=$(printf ' %q' "${extra[@]}")
+    info "Launching $agent as sandbox '$sb' in $cwd"
+    exec sudo -u "$sb" -i bash -lc "cd $(printf '%q' "$cwd") && exec $agent_cmd$extra_q"
+}
+
+cmd_lockdown() {
+    info "This will remove group/other permissions from everything under $HOME"
+    info "and set 'umask 077' for future files."
+    confirm "Proceed?" || die "aborted"
+    chmod -R go-rwx "$HOME" 2>/dev/null || warn "some files could not be changed (see above)"
+    local marker="# >>> asb lockdown >>>" f
+    for f in "$HOME/.profile" "$HOME/.bashrc"; do
+        [[ -f "$f" ]] || continue
+        if ! grep -qF "$marker" "$f"; then
+            printf '\n%s\numask 077\n# <<< asb lockdown <<<\n' "$marker" >> "$f"
+            info "umask 077 added to $f"
+        fi
+    done
+    info "Locked down. New shells will create private files by default."
+}
+
+cmd_doctor() {
+    local ok=0 fail=0
+    check() {  # check <label> <cmd...>
+        local label="$1"; shift
+        if "$@" >/dev/null 2>&1; then
+            printf '  ok    %s\n' "$label"; ok=$((ok+1))
+        else
+            printf '  FAIL  %s\n' "$label"; fail=$((fail+1))
+        fi
+    }
+    info "asb doctor"
+    check "setfacl available" command -v setfacl
+    check "getfacl available" command -v getfacl
+    check "sudo available" command -v sudo
+    check "useradd available (needed for 'asb create')" command -v useradd
+
+    # ACL round-trip on the current filesystem
+    local probe
+    probe=$(mktemp -p "$PWD" .asb-doctor.XXXXXX 2>/dev/null) || probe=""
+    if [[ -n "$probe" ]]; then
+        if setfacl -m "u:$USER:r" "$probe" 2>/dev/null && getfacl "$probe" 2>/dev/null | grep -q "user:$USER"; then
+            printf '  ok    filesystem at %s supports POSIX ACLs\n' "$PWD"; ok=$((ok+1))
+        else
+            printf '  FAIL  filesystem at %s does not support POSIX ACLs (NFS/FAT?)\n' "$PWD"; fail=$((fail+1))
+        fi
+        rm -f "$probe"
+    fi
+
+    local sb
+    for sb in $(all_sandboxes); do
+        check "sandbox '$sb': OS account exists" id "$sb"
+        check "sandbox '$sb': passwordless switch works" sudo -n -u "$sb" true
+        local agent
+        agent=$(default_agent_for "$sb" 2>/dev/null || true)
+        if [[ -n "$agent" ]]; then
+            local bin
+            bin=$(agent_command "$agent" | awk '{print $1}')
+            check "sandbox '$sb': agent '$agent' resolvable ($bin)" \
+                sudo -n -u "$sb" -i bash -lc "command -v $bin"
+        fi
+    done
+    printf '%d ok, %d failed\n' "$ok" "$fail"
+    [[ "$fail" -eq 0 ]]
+}
+
+# ---------------------------------------------------------------- dispatch
+
+main() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -s|--sandbox) SANDBOX_OVERRIDE="${2:-}"; shift 2 || die "-s needs a sandbox name" ;;
+            -y|--yes) ASSUME_YES=1; shift ;;
+            -h|--help) usage; exit 0 ;;
+            --version) printf 'asb %s\n' "$ASB_VERSION"; exit 0 ;;
+            -*) die "unknown option: $1 (see asb --help)" ;;
+            *) break ;;
+        esac
+    done
+    local cmd="${1:-}"
+    [[ -n "$cmd" ]] && shift
+    ensure_config
+    case "$cmd" in
+        create)   cmd_create "$@" ;;
+        delete)   cmd_delete "$@" ;;
+        use)      cmd_use "$@" ;;
+        list)     cmd_list "$@" ;;
+        add)      cmd_add "$@" ;;
+        remove)   cmd_remove "$@" ;;
+        recover)  cmd_recover "$@" ;;
+        launch)   cmd_launch "$@" ;;
+        lockdown) cmd_lockdown "$@" ;;
+        doctor)   cmd_doctor "$@" ;;
+        ""|help)  usage ;;
+        *)        die "unknown command: $cmd (see asb --help)" ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,89 @@
+.TH ASB 1 "2026" "asb" "User Commands"
+.SH NAME
+asb \- run AI coding agents in kernel-enforced sandboxes
+.SH SYNOPSIS
+.B asb
+[\fB\-s\fR \fIsandbox\fR] [\fB\-y\fR] \fIcommand\fR [\fIargs\fR]
+.SH DESCRIPTION
+.B asb
+runs AI coding agents (Claude Code, Hermes, ...) as dedicated locked-down
+OS accounts, called
+.IR sandboxes .
+Project access is granted per directory with POSIX ACLs, so the kernel
+\(em not application configuration \(em enforces what an agent can read
+or write. An agent inside a sandbox cannot reach your home directory,
+your credentials, or other projects.
+.SH COMMANDS
+.TP
+.B create \fIname\fR [\fB\-\-agent\fR \fIagent\fR]
+Create a sandbox: a dedicated OS account with a private home, plus a
+scoped passwordless sudoers rule so you can switch into it. The first
+sandbox created becomes the default.
+.TP
+.B delete \fIname\fR [\fB\-\-purge\fR]
+Delete a sandbox's sudoers rule and configuration. With
+.BR \-\-purge ,
+also remove its OS account and home directory.
+.TP
+.B use \fIname\fR
+Set the default sandbox.
+.TP
+.B list \fR[\fIname\fR]
+Show sandboxes, their default agents, and their granted directories.
+.TP
+.B add \fR[\fIdir\fR]
+Grant the sandbox read/write access to a directory (default: the current
+directory). Tightens the directory against other users, applies ACLs with
+inheritance, adds traverse-only permission on parent directories, and
+warns if a world-readable parent would leak sibling names.
+.TP
+.B remove \fR[\fIdir\fR]
+Revoke a grant.
+.TP
+.B recover
+Re-apply every grant from configuration. Useful after restoring from a
+backup tool or sync service that does not preserve ACLs.
+.TP
+.B launch \fR[\fIsandbox\fR] [\fIagent\fR] [\fB\-\-\fR \fIargs\fR]
+Launch an agent in the current directory, inside a sandbox. With no
+arguments, uses the default sandbox and that sandbox's default agent.
+Refuses to run unless the current directory has been granted. Extra
+arguments after \fB\-\-\fR pass through to the agent.
+.TP
+.B lockdown
+One-off hardening of your own account: remove group/other permissions
+from everything under \fB$HOME\fR and set \fBumask 077\fR for new files.
+.TP
+.B doctor
+Check that ACLs, sudoers rules, and agents are working.
+.SH OPTIONS
+.TP
+.BR \-s ", " \-\-sandbox " " \fIname\fR
+Operate on this sandbox instead of the default.
+.TP
+.BR \-y ", " \-\-yes
+Assume yes on confirmation prompts.
+.SH FILES
+.TP
+.I ~/.config/asb/config
+Global settings (default_sandbox, default_agent).
+.TP
+.I ~/.config/asb/agents.conf
+Agent definitions, one per line: \fIname\fR=\fIcommand line\fR.
+.TP
+.I ~/.config/asb/<sandbox>/directories
+Granted directories for a sandbox, one absolute path per line.
+.TP
+.I /etc/sudoers.d/asb\-<sandbox>
+The scoped passwordless switching rule.
+.SH CAVEATS
+The sandbox boundary is standard Unix user separation: it does not
+provide network isolation, it does not protect secrets inside granted
+directories, and it is not a defense against kernel privilege-escalation
+exploits. Sync services such as Dropbox do not preserve POSIX ACLs; run
+.B asb recover
+if grants are lost.
+.SH SEE ALSO
+.BR setfacl (1),
+.BR getfacl (1),
+.BR sudoers (5)
