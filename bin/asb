@@ -470,9 +470,15 @@ cmd_lockdown() {
             fi
         done < "$(grant_file "$sb")"
     done
-    local marker="# >>> asb lockdown >>>" f
-    for f in "$HOME/.profile" "$HOME/.bashrc"; do
-        [[ -f "$f" ]] || continue
+    local marker="# >>> asb lockdown >>>" f files=("$HOME/.bashrc")
+    # Login shells read .bash_profile if present (Fedora skel), else .profile.
+    if [[ -f "$HOME/.bash_profile" ]]; then
+        files+=("$HOME/.bash_profile")
+    else
+        files+=("$HOME/.profile")
+    fi
+    for f in "${files[@]}"; do
+        [[ -f "$f" ]] || touch "$f"
         if ! grep -qF "$marker" "$f"; then
             printf '\n%s\numask 077\n# <<< asb lockdown <<<\n' "$marker" >> "$f"
             info "umask 077 added to $f"

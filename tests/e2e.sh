@@ -39,7 +39,7 @@ step "create sandbox"
 expect_ok asb create "$SB" --agent fake
 expect_ok id "$SB"
 expect_ok sudo -n -u "$SB" true
-expect_ok test -f "/etc/sudoers.d/asb-$SB"
+expect_ok sudo -n test -f "/etc/sudoers.d/asb-$SB"
 
 step "sandbox home is private"
 sb_home=$(getent passwd "$SB" | cut -d: -f6)
@@ -56,7 +56,7 @@ expect_ok asb add .
 step "lockdown closes world-readable files and keeps grants alive"
 expect_ok asb lockdown
 [[ "$(stat -c %a "$HOME/secret.txt")" == "600" ]] || bad "secret.txt not tightened"
-check "grep -q 'umask 077' '$HOME/.profile'" "umask set in .profile" "umask missing from .profile"
+check "grep -q 'umask 077' '$HOME/.bashrc'" "umask set in .bashrc" "umask missing from .bashrc"
 
 step "sandbox can read/write the granted project"
 expect_ok as_sb "cat $HOME/project/file.txt"
@@ -104,7 +104,7 @@ check "cd '$HOME/project' && asb doctor" "doctor clean" "doctor reported failure
 step "delete with purge"
 expect_ok asb delete "$SB" --purge
 expect_fail id "$SB"
-expect_fail test -f "/etc/sudoers.d/asb-$SB"
+expect_fail sudo -n test -f "/etc/sudoers.d/asb-$SB"
 
 echo
 if [[ $fails -eq 0 ]]; then
