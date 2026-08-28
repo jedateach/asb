@@ -97,13 +97,17 @@ check "grep -qx '$SB' <<< \"\$out\"" "shell runs as $SB" "shell wrong uid: $out"
 
 step "create does not install anything without a TTY"
 expect_ok asb create nettest --agent claude
-check "asb list nettest | grep -q 'agent: claude'" "sandbox uses the claude agent" "wrong agent"
+# Capture, then match: piping into 'grep -q' lets grep exit on the first line
+# and kills asb with SIGPIPE, which pipefail reports as a failed check.
+out=$(asb list nettest 2>&1) || bad "asb list nettest failed: $out"
+check "grep -q 'agent: claude' <<< \"\$out\"" "sandbox uses the claude agent" "wrong agent: $out"
 check "! sudo -n -u nettest -i bash -lc 'command -v claude'" \
       "no unattended install happened" "claude was installed without a TTY"
 expect_ok asb delete nettest --purge
 
 step "list shows the grant"
-check "asb list | grep -q '$HOME/project'" "list shows grant" "grant missing from list"
+out=$(asb list 2>&1) || bad "asb list failed: $out"
+check "grep -q '$HOME/project' <<< \"\$out\"" "list shows grant" "grant missing from list: $out"
 
 step "revoke"
 expect_ok asb -s "$SB" remove "$HOME/project"
