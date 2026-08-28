@@ -13,7 +13,12 @@ RUN sed -i "s/^pkgver=.*/pkgver=${VERSION}/" /home/build/pkg/PKGBUILD \
     && pacman -U --noconfirm /home/build/pkg/asb-${VERSION}-*.pkg.tar.zst
 RUN useradd -m -s /bin/bash dev \
     && echo 'dev ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/dev
+# COPY preserves the host's bits, for the script and for the parent directory
+# it creates. On a checkout that has been through 'asb lockdown' (go-rwx across
+# $HOME) both land 0770 root-owned, and the unprivileged 'dev' user can neither
+# read the script nor enter its directory. Pin both.
 COPY tests/e2e.sh /usr/local/share/asb-tests/e2e.sh
+RUN chmod 0755 /usr/local/share/asb-tests /usr/local/share/asb-tests/e2e.sh
 USER dev
 WORKDIR /home/dev
 CMD ["bash", "/usr/local/share/asb-tests/e2e.sh"]
