@@ -94,7 +94,10 @@ config_get() {  # config_get <file> <key>
 config_set() {  # config_set <file> <key> <value>
     local tmp
     tmp=$(mktemp)
-    { [[ -f "$1" ]] && grep -v "^$2=" "$1" || true; printf '%s=%s\n' "$2" "$3"; } > "$tmp"
+    {
+        if [[ -f "$1" ]]; then grep -v "^$2=" "$1" || true; fi
+        printf '%s=%s\n' "$2" "$3"
+    } > "$tmp"
     mv "$tmp" "$1"
 }
 
