@@ -9,6 +9,9 @@ set -euo pipefail
 
 ASB_VERSION="0.0.0-dev"
 
+# $USER is not guaranteed by POSIX (absent in some containers/cron)
+USER="${USER:-$(id -un)}"
+
 CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/asb"
 CONFIG_FILE="$CONFIG_ROOT/config"
 AGENTS_FILE="$CONFIG_ROOT/agents.conf"
@@ -141,16 +144,26 @@ default_agent_for() {  # default_agent_for <sandbox>
 
 tighten_subtree() {
     info "Tightening permissions (go-rwx) on: $1"
-    chmod -R go-rwx "$1"
+    # Files created by the sandbox belong to its account and cannot be
+    # chmod'ed by us; they inherit private permissions from the default ACL,
+    # so skipping them is safe.
+    chmod -R go-rwx "$1" 2>/dev/null || \
+        warn "some files in $1 are owned by other accounts and were left unchanged"
 }
 
 apply_grants() {  # apply_grants <acct> <dir>
     local acct="$1" dir="$2"
     info "Granting $acct access to: $dir"
-    setfacl -R -m "u:$acct:rwX,d:u:$acct:rwX,u:$USER:rwX,d:u:$USER:rwX" "$dir"
+    # Files created by the sandbox are owned by its account and cannot be
+    # re-ACL'ed by us; they already carry both ACLs via inheritance.
+    setfacl -R -m "u:$acct:rwX,d:u:$acct:rwX,u:$USER:rwX,d:u:$USER:rwX" "$dir" 2>/dev/null || \
+        warn "files not owned by you kept their existing ACLs"
+    getfacl -p "$dir" 2>/dev/null | grep -q "^user:$acct:" || \
+        die "failed to apply ACLs on $dir (filesystem without ACL support?)"
 }
 
 remove_grants() {  # remove_grants <acct> <dir>
+    local acct="$1" dir="$2"
     info "Revoking $acct access to: $dir"
     setfacl -R -x "u:$acct" "$dir" 2>/dev/null || true
     setfacl -R -d -x "u:$acct" "$dir" 2>/dev/null || true
@@ -445,7 +458,18 @@ cmd_lockdown() {
     info "This will remove group/other permissions from everything under $HOME"
     info "and set 'umask 077' for future files."
     confirm "Proceed?" || die "aborted"
-    chmod -R go-rwx "$HOME" 2>/dev/null || warn "some files could not be changed (see above)"
+    chmod -R go-rwx "$HOME" 2>/dev/null || warn "some files could not be changed"
+    # The chmod above zeroes the ACL mask on any already-granted project under
+    # $HOME, so re-apply every sandbox's grants.
+    local sb dir
+    for sb in $(all_sandboxes); do
+        while IFS= read -r dir; do
+            if [[ -d "$dir" ]]; then
+                apply_grants "$sb" "$dir"
+                apply_parent_traverse "$sb" "$dir"
+            fi
+        done < "$(grant_file "$sb")"
+    done
     local marker="# >>> asb lockdown >>>" f
     for f in "$HOME/.profile" "$HOME/.bashrc"; do
         [[ -f "$f" ]] || continue

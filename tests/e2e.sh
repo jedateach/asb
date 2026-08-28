@@ -27,8 +27,16 @@ as_sb() { sudo -n -u "$SB" bash -c "$1"; }
 step "doctor before any sandbox exists"
 asb doctor || true   # informational; account checks don't apply yet
 
+step "register a stub agent"
+sudo tee /usr/local/bin/fake-agent >/dev/null <<'EOF'
+#!/bin/sh
+echo "fake-agent uid=$(id -un) cwd=$(pwd) args=$*"
+EOF
+sudo chmod 755 /usr/local/bin/fake-agent
+echo "fake=fake-agent" >> "${XDG_CONFIG_HOME:-$HOME/.config}/asb/agents.conf"
+
 step "create sandbox"
-expect_ok asb create "$SB"
+expect_ok asb create "$SB" --agent fake
 expect_ok id "$SB"
 expect_ok sudo -n -u "$SB" true
 expect_ok test -f "/etc/sudoers.d/asb-$SB"
@@ -41,9 +49,14 @@ step "grant a project"
 chmod 700 "$HOME"
 mkdir -p "$HOME/project/sub"
 echo "hello" > "$HOME/project/file.txt"
-echo "s3cret" > "$HOME/secret.txt"
+echo "s3cret" > "$HOME/secret.txt"    # world-readable until lockdown runs
 cd "$HOME/project"
 expect_ok asb add .
+
+step "lockdown closes world-readable files and keeps grants alive"
+expect_ok asb lockdown
+[[ "$(stat -c %a "$HOME/secret.txt")" == "600" ]] || bad "secret.txt not tightened"
+check "grep -q 'umask 077' '$HOME/.profile'" "umask set in .profile" "umask missing from .profile"
 
 step "sandbox can read/write the granted project"
 expect_ok as_sb "cat $HOME/project/file.txt"
@@ -62,13 +75,6 @@ expect_fail as_sb "ls $HOME"
 expect_fail as_sb "ls /root"
 
 step "launch guard and agent execution"
-sudo tee /usr/local/bin/fake-agent >/dev/null <<'EOF'
-#!/bin/sh
-echo "fake-agent uid=$(id -un) cwd=$(pwd) args=$*"
-EOF
-sudo chmod 755 /usr/local/bin/fake-agent
-echo "fake=fake-agent" >> "${XDG_CONFIG_HOME:-$HOME/.config}/asb/agents.conf"
-
 out=$(cd "$HOME/project" && asb launch "$SB" fake -- --extra 2>&1) || bad "launch exited non-zero: $out"
 check "grep -q 'uid=$SB' <<< \"\$out\"" "agent ran as $SB" "wrong uid: $out"
 check "grep -q 'cwd=$HOME/project' <<< \"\$out\"" "agent ran in project" "wrong cwd: $out"
@@ -86,7 +92,8 @@ expect_fail as_sb "cat $HOME/project/file.txt"
 
 step "recover re-applies grants"
 cd "$HOME/project" && asb add . >/dev/null
-setfacl -R -b "$HOME/project"      # simulate ACL loss (backup/sync clobber)
+# simulate ACL loss (backup/sync clobber); agent-owned files keep theirs
+setfacl -R -b "$HOME/project" 2>/dev/null || true
 expect_fail as_sb "cat $HOME/project/file.txt"
 expect_ok asb recover
 expect_ok as_sb "cat $HOME/project/file.txt"
