@@ -11,6 +11,54 @@ This is a Linux port of the ["second user account" approach for macOS][article].
 
 [article]: https://medium.com/@bradnz/sandboxing-claude-code-on-macos-with-a-second-user-account-a16070e1663e
 
+## Warnings
+
+Read this before pointing an agent at anything you care about.
+
+**It is a filesystem boundary, and only that.** What you get is kernel-enforced
+isolation of your files: per-project, explicit, revocable grants, with a blast radius
+limited to what you granted. What you do not get:
+
+- **Network isolation.** The sandbox has full outbound network access. An agent can send
+  anything it can read wherever it likes, and fetch and run arbitrary code inside the
+  sandbox. Layer a firewall if exfiltration is in your threat model.
+- **Protection for secrets _inside_ a granted project.** A grant is `rwX` over the whole
+  tree — `.env`, tokens in `.git/config`, service keys and all. Keep them out of it.
+- **Protection from the rest of the system.** A sandbox is an ordinary Linux account,
+  not a container: it can still read anything world-readable (`/etc`, `/tmp`, other
+  users' world-readable files) and see the process list.
+- **Resistance to a real exploit.** Local privilege escalation defeats any account
+  boundary. Run genuinely hostile code in a VM, not in `asb`.
+
+**A grant is write access.** `asb add` gives `rwX` over the whole tree, `.git`
+included — an agent can delete files, rewrite history, and push with whatever
+credentials it finds in there. Grant work that is committed and pushed somewhere you can
+recover it from.
+
+**One sandbox is one trust domain.** Every session in a sandbox shares that account's
+grants: a project granted to `claude-x` is readable by anything you ever run as
+`claude-x`. Use separate sandboxes for work you want kept apart.
+
+**Some commands change permissions on your files, in bulk, and do not remember what they
+were.**
+
+- `asb lockdown` runs `chmod -R go-rwx "$HOME"` and appends `umask 077` to your shell
+  startup files. If anything else on the machine reads your home directory — a web
+  server, a shared group directory, a backup agent running as another account — this
+  will break it.
+- `asb add` runs the same `chmod -R go-rwx` over the project before granting.
+- `asb delete --purge` runs `userdel -r`: the sandbox's home directory, and anything an
+  agent left in it, is gone.
+
+**ACLs are fragile in transit.** Dropbox and most sync/backup tools, `rsync` without
+`-A`, and `tar` without `--acls` drop them silently — grants then disappear with no
+error and `asb launch` starts refusing. Keep sandboxed projects out of synced trees, or
+run `asb recover` to re-apply every grant.
+
+**Early software.** `asb` is one bash script that creates OS accounts and installs
+sudoers rules on your machine. Read it before you run it, and run `asb doctor`
+afterwards.
+
 ## Install
 
 **Ubuntu / Debian** — download the `.deb` from the latest release:
@@ -102,14 +150,6 @@ asb -s claude-x shell          # or poke around by hand
 - Grants live in `~/.config/asb/<sandbox>/directories`; `asb recover` re-applies them
   all after anything that strips ACLs.
 
-## What this buys you (and what it doesn't)
+## License
 
-You get filesystem isolation enforced by the kernel, per-project explicit revocable
-grants, and a blast radius limited to what you granted.
-
-You don't get network isolation (layer a firewall if exfiltration is in your threat
-model), protection for secrets _inside_ granted projects (keep them out of the tree),
-or resistance to kernel privilege-escalation exploits (use a VM for hostile code).
-
-**Sync-service caveat**: Dropbox and most backup tools do not preserve POSIX ACLs. Keep
-sandboxed projects outside synced trees, or run `asb recover` when grants go missing.
+MIT — see [LICENSE](LICENSE).
