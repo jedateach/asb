@@ -38,11 +38,9 @@ Runtime dependencies (present on most systems): `bash`, `acl`, `sudo`, `passwd`.
 # One-off: stop other accounts reading your home directory
 asb lockdown
 
-# Create a sandbox (a locked-down OS account) and make it the default
+# Create a sandbox (a locked-down OS account) and make it the default.
+# It offers to install the agent CLI inside the sandbox for you.
 asb create claude-x --agent claude
-
-# Install the agent CLI inside the sandbox
-sudo -u claude-x -i bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
 
 # Grant it a project and launch
 cd ~/code/my-project
@@ -56,6 +54,8 @@ Day to day:
 asb launch                     # default sandbox, its default agent, right here
 asb launch claude-x            # a specific sandbox
 asb launch claude-x hermes -- --continue   # explicit agent + pass-through args
+asb run 'claude --version'     # run any command as the sandbox, in its home
+asb shell                      # an interactive shell inside the sandbox
 asb list                       # every sandbox and what it can touch
 asb remove                     # revoke the current project
 asb doctor                     # check ACLs, sudoers, agents
@@ -77,6 +77,17 @@ hermes=hermes
 Whether an agent runs with its own permission prompts disabled is your per-agent choice.
 The OS boundary holds either way — that's the point.
 
+An agent's CLI has to be installed _inside_ the sandbox, where your own copy is out of
+reach. `asb create` offers to do that for agents it knows how to fetch (Claude Code
+today); `--install` installs without asking, `--no-install` skips it, and nothing is ever
+installed non-interactively (or by `-y`) unless you pass `--install`. For anything else,
+install it yourself with one command:
+
+```sh
+asb -s claude-x run 'curl -fsSL https://example.com/install.sh | bash'
+asb -s claude-x shell          # or poke around by hand
+```
+
 ## How it works
 
 - `asb create <name>` makes a standard OS account with a `700` home and installs a
@@ -86,7 +97,8 @@ The OS boundary holds either way — that's the point.
   inheriting default ACLs (`setfacl`), gives it traverse-only (`--x`) permission on
   parent directories, and warns if a world-readable parent would leak sibling names.
 - `asb launch` re-checks the grant list, then runs the agent as the sandbox account in
-  your current directory.
+  your current directory. `asb run` and `asb shell` use the same door for anything else
+  you need to do inside the sandbox (installing an agent, checking a version).
 - Grants live in `~/.config/asb/<sandbox>/directories`; `asb recover` re-applies them
   all after anything that strips ACLs.
 

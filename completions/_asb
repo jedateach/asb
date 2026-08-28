@@ -29,6 +29,8 @@ _asb() {
         'remove:revoke access to a directory'
         'recover:re-apply all grants from config'
         'launch:launch an agent in a sandbox'
+        'run:run a command inside a sandbox'
+        'shell:open an interactive shell in a sandbox'
         'lockdown:harden your home directory'
         'doctor:diagnose sandbox setup'
     )
@@ -60,8 +62,13 @@ _asb() {
                 add|remove)
                     _files -/
                     ;;
+                run)
+                    _arguments '--here[run in the current directory]' '*::command:_command_names'
+                    ;;
                 create)
-                    _arguments '--agent[default agent]:agent:_asb_agents'
+                    _arguments '--agent[default agent]:agent:_asb_agents' \
+                               '--install[install the agent CLI]' \
+                               '--no-install[do not install the agent CLI]'
                     ;;
             esac
             ;;

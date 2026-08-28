@@ -83,6 +83,25 @@ check "grep -q -- 'args=--extra' <<< \"\$out\"" "extra args passed" "args missin
 mkdir -p "$HOME/ungranted"
 expect_fail bash -c "cd '$HOME/ungranted' && asb launch $SB fake"
 
+step "run and shell"
+out=$(asb -s "$SB" run 'id -un; pwd')
+check "grep -qx '$SB' <<< \"\$out\"" "run executes as $SB" "wrong uid: $out"
+check "grep -qx '$sb_home' <<< \"\$out\"" "run starts in the sandbox home" "wrong cwd: $out"
+out=$(asb -s "$SB" run echo 'two  words')
+check "[[ \"\$out\" == 'two  words' ]]" "multiple args keep their quoting" "got: $out"
+out=$(cd "$HOME/project" && asb -s "$SB" run --here pwd)
+check "[[ \"\$out\" == '$HOME/project' ]]" "--here runs in the granted project" "wrong cwd: $out"
+expect_fail bash -c "cd '$HOME/ungranted' && asb -s $SB run --here pwd"
+out=$(printf 'id -un\n' | asb -s "$SB" shell 2>/dev/null)
+check "grep -qx '$SB' <<< \"\$out\"" "shell runs as $SB" "shell wrong uid: $out"
+
+step "create does not install anything without a TTY"
+expect_ok asb create nettest --agent claude
+check "asb list nettest | grep -q 'agent: claude'" "sandbox uses the claude agent" "wrong agent"
+check "! sudo -n -u nettest -i bash -lc 'command -v claude'" \
+      "no unattended install happened" "claude was installed without a TTY"
+expect_ok asb delete nettest --purge
+
 step "list shows the grant"
 check "asb list | grep -q '$HOME/project'" "list shows grant" "grant missing from list"
 

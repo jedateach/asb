@@ -32,6 +32,8 @@ t_fail() {  # expect non-zero exit
 t "asb --help exits 0"            "$ASB" --help
 t "asb --version exits 0"         "$ASB" --version
 t "asb with no args shows usage"  "$ASB"
+t "help documents run"            grep -q '^  run ' <("$ASB" --help)
+t "help documents shell"          grep -q '^  shell ' <("$ASB" --help)
 t_fail "unknown command rejected" "$ASB" frobnicate
 t_fail "unknown option rejected"  "$ASB" --frobnicate
 
@@ -43,6 +45,9 @@ t "seeded agents include claude" grep -q '^claude=' "$XDG_CONFIG_HOME/asb/agents
 # Commands that need a sandbox fail cleanly without one
 t_fail "add without sandbox fails"    "$ASB" add "$scratch"
 t_fail "launch without sandbox fails" "$ASB" launch
+t_fail "run without sandbox fails"    "$ASB" run true
+t_fail "shell without sandbox fails"  "$ASB" shell
+t_fail "run without a command fails"  "$ASB" run
 t_fail "use unknown sandbox fails"    "$ASB" use nope
 t_fail "delete unknown sandbox fails" "$ASB" -y delete nope
 t_fail "invalid sandbox name rejected" "$ASB" create 'Bad Name!'

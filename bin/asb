@@ -39,7 +39,9 @@ asb $ASB_VERSION — run AI coding agents in kernel-enforced sandboxes
 Usage: asb [-s <sandbox>] [-y] <command> [args]
 
 Sandboxes:
-  create <name> [--agent <agent>]   Create a sandbox (a dedicated OS account)
+  create <name> [--agent <agent>] [--install|--no-install]
+                                    Create a sandbox (a dedicated OS account)
+                                    and offer to install its agent CLI
   delete <name> [--purge]           Delete a sandbox (--purge also removes its home)
   use <name>                        Set the default sandbox
   list [name]                       Show sandboxes and their granted directories
@@ -54,6 +56,13 @@ Running agents:
                                     Launch an agent here, inside a sandbox.
                                     Everything is defaultable: 'asb launch' uses
                                     the default sandbox and its default agent.
+
+Working inside a sandbox:
+  run [--here] <command...>         Run a command as the sandbox, in its home.
+                                    --here runs in the current directory, which
+                                    must be granted. Installing an agent CLI:
+                                      asb run 'curl -fsSL https://claude.ai/install.sh | bash'
+  shell                             Open an interactive shell in the sandbox
 
 Host hardening & diagnostics:
   lockdown                          chmod go-rwx your \$HOME + set umask 077
@@ -130,6 +139,18 @@ agent_command() {  # agent_command <agent-name>
 
 agent_names() { sed -n 's/^\([A-Za-z0-9_-]\+\)=.*/\1/p' "$AGENTS_FILE"; }
 
+# The executable an agent runs: the first word of its command line.
+agent_binary() { agent_command "$1" | awk '{print $1}'; }
+
+# How to fetch an agent CLI we know about, keyed on the binary rather than the
+# agent name so 'claude', 'claude-safe' and any user-defined variant match.
+# The command runs inside the sandbox, so curl is the sandbox's dependency.
+agent_installer() {  # agent_installer <binary>
+    case "$1" in
+        claude) printf '%s' 'curl -fsSL https://claude.ai/install.sh | bash' ;;
+    esac
+}
+
 default_agent_for() {  # default_agent_for <sandbox>
     local agent
     agent=$(config_get "$CONFIG_ROOT/$1/config" agent)
@@ -137,6 +158,18 @@ default_agent_for() {  # default_agent_for <sandbox>
     [[ -n "$agent" ]] || agent=$(agent_names | head -n 1)
     [[ -n "$agent" ]] || die "no agents configured in $AGENTS_FILE"
     printf '%s' "$agent"
+}
+
+# Run a shell command as the sandbox account. -i gives a login shell, so the
+# sandbox's own PATH (agents install into ~/.local/bin) applies; -n keeps
+# checks non-interactive.
+sandbox_sh() {  # sandbox_sh [-n] <sandbox> <shell-command>
+    if [[ "$1" == "-n" ]]; then
+        shift
+        sudo -n -u "$1" -i bash -lc "$2"
+    else
+        sudo -u "$1" -i bash -lc "$2"
+    fi
 }
 
 # ------------------------------------------------------------- ACL plumbing
@@ -217,19 +250,73 @@ resolve_dir() {
     realpath "$dir" 2>/dev/null || die "cannot resolve directory: $dir"
 }
 
+# Refuse to work in a directory the sandbox has not been granted.
+require_granted() {  # require_granted <sandbox> <dir>
+    local sb="$1" dir="$2" gf entry resolved
+    gf=$(grant_file "$sb")
+    [[ -s "$gf" ]] || die "no directories granted to '$sb'. Run 'asb add' in your project first."
+    while IFS= read -r entry; do
+        resolved=$(realpath "$entry" 2>/dev/null) || continue
+        if [[ "$dir" == "$resolved" || "$dir" == "$resolved"/* ]]; then
+            return 0
+        fi
+    done < "$gf"
+    {
+        printf 'asb: error: %s is not granted to sandbox %s.\n' "$dir" "$sb"
+        printf 'Granted directories:\n'
+        sed 's/^/    /' "$gf"
+        printf "To grant it: asb -s %s add\n" "$sb"
+    } >&2
+    exit 1
+}
+
 # ---------------------------------------------------------------- commands
 
+# Install an agent CLI inside a sandbox, if we know how and the user agrees.
+# Never runs unattended: with no TTY (scripts, CI) we skip and let the caller
+# print the command instead — -y must not silently start a network install.
+install_agent_into() {  # install_agent_into <sandbox> <binary> <installer> <yes|no|"">
+    local sb="$1" bin="$2" installer="$3" choice="$4"
+    if sandbox_sh -n "$sb" "command -v $(printf '%q' "$bin")" >/dev/null 2>&1; then
+        info "'$bin' is already installed in sandbox '$sb'."
+        return 0
+    fi
+    [[ "$choice" == no ]] && return 1
+    if [[ -z "$installer" ]]; then
+        [[ "$choice" == yes ]] &&
+            warn "no built-in installer for '$bin' — install it with: asb -s $sb run '<command>'"
+        return 1
+    fi
+    if [[ "$choice" != yes ]]; then
+        [[ -t 0 ]] || return 1
+        # Deliberately not confirm(): -y/ASB_ASSUME_YES must never auto-approve
+        # a network install. --install is the explicit, scriptable opt-in.
+        local reply
+        read -r -p "Install '$bin' in sandbox '$sb' now? [y/N] " reply || reply=""
+        [[ "$reply" == y || "$reply" == Y ]] || return 1
+    fi
+    info "Installing '$bin' in sandbox '$sb'…"
+    if sandbox_sh "$sb" "$installer"; then
+        info "'$bin' installed in '$sb'."
+        return 0
+    fi
+    warn "installing '$bin' failed — retry with: asb -s $sb run '$installer'"
+    return 1
+}
+
 cmd_create() {
-    local name="" agent="" arg
+    local name="" agent="" install="" arg
     while [[ $# -gt 0 ]]; do
         arg="$1"; shift
         case "$arg" in
             --agent) agent="${1:-}"; shift || true ;;
+            --install) install=yes ;;
+            --no-install) install=no ;;
             -*) die "unknown option for create: $arg" ;;
             *) if [[ -z "$name" ]]; then name="$arg"; else die "create takes one name"; fi ;;
         esac
     done
-    [[ -n "$name" ]] || die "usage: asb create <name> [--agent <agent>]"
+    [[ -n "$name" ]] || die "usage: asb create <name> [--agent <agent>] [--install|--no-install]"
     [[ "$name" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid sandbox name '$name' (lowercase letters, digits, - and _)"
     sandbox_exists "$name" && die "sandbox '$name' already exists"
     ensure_config
@@ -263,15 +350,24 @@ cmd_create() {
         info "'$name' is now the default sandbox."
     fi
 
-    cat <<EOF
-Sandbox '$name' created.
+    local sb_agent bin="" installer="" installed=""
+    sb_agent=$(default_agent_for "$name" 2>/dev/null || true)
+    if [[ -n "$sb_agent" ]]; then
+        bin=$(agent_binary "$sb_agent" 2>/dev/null || true)
+        [[ -n "$bin" ]] && installer=$(agent_installer "$bin")
+    fi
+    if [[ -n "$bin" ]] && install_agent_into "$name" "$bin" "$installer" "$install"; then
+        installed=1
+    fi
 
-Next steps:
-  1. Install the agent CLI inside it, e.g.:
-       sudo -u $name -i bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
-  2. Grant it a project:   cd ~/code/my-project && asb add
-  3. Launch:               asb launch $name
-EOF
+    local step=1
+    printf "\nSandbox '%s' created.\n\nNext steps:\n" "$name"
+    if [[ -z "$installed" ]]; then
+        printf '  %d. Install the agent CLI inside it:\n' "$step"; step=$((step+1))
+        printf "       asb -s %s run '%s'\n" "$name" "${installer:-<install command>}"
+    fi
+    printf '  %d. Grant it a project:   cd ~/code/my-project && asb add\n' "$step"; step=$((step+1))
+    printf '  %d. Launch:               asb launch %s\n' "$step" "$name"
 }
 
 cmd_delete() {
@@ -430,31 +526,51 @@ cmd_launch() {
     local agent_cmd
     agent_cmd=$(agent_command "$agent")
 
-    local cwd matched="" dir resolved gf
+    local cwd
     cwd=$(pwd -P)
-    gf=$(grant_file "$sb")
-    [[ -s "$gf" ]] || die "no directories granted to '$sb'. Run 'asb add' in your project first."
-    while IFS= read -r dir; do
-        resolved=$(realpath "$dir" 2>/dev/null) || continue
-        if [[ "$cwd" == "$resolved" || "$cwd" == "$resolved"/* ]]; then
-            matched="$resolved"
-            break
-        fi
-    done < "$gf"
-    if [[ -z "$matched" ]]; then
-        {
-            printf 'asb: error: %s is not granted to sandbox %s.\n' "$cwd" "$sb"
-            printf 'Granted directories:\n'
-            sed 's/^/    /' "$gf"
-            printf "To grant it: asb -s %s add\n" "$sb"
-        } >&2
-        exit 1
-    fi
+    require_granted "$sb" "$cwd"
 
     local extra_q=""
     [[ ${#extra[@]} -gt 0 ]] && extra_q=$(printf ' %q' "${extra[@]}")
     info "Launching $agent as sandbox '$sb' in $cwd"
     exec sudo -u "$sb" -i bash -lc "cd $(printf '%q' "$cwd") && exec $agent_cmd$extra_q"
+}
+
+cmd_run() {
+    local here="" arg
+    while [[ $# -gt 0 ]]; do
+        arg="$1"
+        case "$arg" in
+            --here) here=1; shift ;;
+            --) shift; break ;;
+            *) break ;;
+        esac
+    done
+    [[ $# -gt 0 ]] || die "usage: asb run [--here] <command...>"
+    local sb cmd
+    sb=$(current_sandbox)
+    # One argument is a command line for the sandbox's shell, so pipes and
+    # redirection survive; several are a command plus arguments, quoted.
+    if [[ $# -eq 1 ]]; then
+        cmd="$1"
+    else
+        cmd=$(printf '%q ' "$@")
+    fi
+    if [[ -n "$here" ]]; then
+        local cwd
+        cwd=$(pwd -P)
+        require_granted "$sb" "$cwd"
+        cmd="cd $(printf '%q' "$cwd") && $cmd"
+    fi
+    exec sudo -u "$sb" -i bash -lc "$cmd"
+}
+
+cmd_shell() {
+    [[ $# -eq 0 ]] || die "usage: asb shell (to run a single command, use 'asb run')"
+    local sb
+    sb=$(current_sandbox)
+    printf "Entering sandbox '%s' — exit or ^D to leave.\n" "$sb" >&2
+    exec sudo -u "$sb" -i
 }
 
 cmd_lockdown() {
@@ -522,13 +638,19 @@ cmd_doctor() {
     for sb in $(all_sandboxes); do
         check "sandbox '$sb': OS account exists" id "$sb"
         check "sandbox '$sb': passwordless switch works" sudo -n -u "$sb" true
-        local agent
+        local agent bin installer
         agent=$(default_agent_for "$sb" 2>/dev/null || true)
-        if [[ -n "$agent" ]]; then
-            local bin
-            bin=$(agent_command "$agent" | awk '{print $1}')
-            check "sandbox '$sb': agent '$agent' resolvable ($bin)" \
-                sudo -n -u "$sb" -i bash -lc "command -v $bin"
+        [[ -n "$agent" ]] || continue
+        bin=$(agent_binary "$agent" 2>/dev/null || true)
+        [[ -n "$bin" ]] || continue
+        if sandbox_sh -n "$sb" "command -v $(printf '%q' "$bin")" >/dev/null 2>&1; then
+            printf "  ok    sandbox '%s': agent '%s' resolvable (%s)\n" "$sb" "$agent" "$bin"
+            ok=$((ok+1))
+        else
+            printf "  FAIL  sandbox '%s': agent '%s' not installed (%s)\n" "$sb" "$agent" "$bin"
+            fail=$((fail+1))
+            installer=$(agent_installer "$bin")
+            printf "        install it with: asb -s %s run '%s'\n" "$sb" "${installer:-<install command>}"
         fi
     done
     printf '%d ok, %d failed\n' "$ok" "$fail"
@@ -560,6 +682,8 @@ main() {
         remove)   cmd_remove "$@" ;;
         recover)  cmd_recover "$@" ;;
         launch)   cmd_launch "$@" ;;
+        run)      cmd_run "$@" ;;
+        shell)    cmd_shell "$@" ;;
         lockdown) cmd_lockdown "$@" ;;
         doctor)   cmd_doctor "$@" ;;
         ""|help)  usage ;;

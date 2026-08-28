@@ -42,6 +42,11 @@ e2e failure, rebuild that one image and run it interactively, e.g.:
 - **ACL ordering is load-bearing**: on Linux the group permission bits of a file with
   an ACL _are_ the ACL mask. `chmod -R go-rwx` after `setfacl` would zero the mask and
   silently disable every grant. Always tighten (chmod) first, grant (setfacl) second.
+- **Agent installs**: `agent_installer()` holds the one-liner that fetches a known
+  agent CLI, keyed on the _binary_ (first word of the `agents.conf` command), and
+  `asb create` offers to run it. That `curl` runs inside the sandbox, so it is not an
+  `asb` runtime dependency. The prompt deliberately ignores `-y`/`ASB_ASSUME_YES` —
+  only `--install` may approve a network install unattended.
 - **Version**: `ASB_VERSION` in `bin/asb` is `0.0.0-dev` in git; real versions are
   injected at build time by the Makefile (`VERSION=`), which CI passes from
   semantic-release (`.releaserc.json`). Nothing in the repo is ever bumped by hand.

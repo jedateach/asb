@@ -15,10 +15,23 @@ or write. An agent inside a sandbox cannot reach your home directory,
 your credentials, or other projects.
 .SH COMMANDS
 .TP
-.B create \fIname\fR [\fB\-\-agent\fR \fIagent\fR]
+.B create \fIname\fR [\fB\-\-agent\fR \fIagent\fR] [\fB\-\-install\fR|\fB\-\-no\-install\fR]
 Create a sandbox: a dedicated OS account with a private home, plus a
 scoped passwordless sudoers rule so you can switch into it. The first
-sandbox created becomes the default.
+sandbox created becomes the default. When the sandbox's agent is one
+.B asb
+knows how to fetch, and the terminal is interactive, it offers to install
+that CLI inside the sandbox;
+.B \-\-install
+installs without asking and
+.B \-\-no\-install
+skips the offer. Without a terminal (scripts, CI) nothing is installed
+unless
+.B \-\-install
+is given;
+.B \-y
+does not answer this prompt, because it downloads and runs code from the
+network.
 .TP
 .B delete \fIname\fR [\fB\-\-purge\fR]
 Delete a sandbox's sudoers rule and configuration. With
@@ -49,6 +62,21 @@ Launch an agent in the current directory, inside a sandbox. With no
 arguments, uses the default sandbox and that sandbox's default agent.
 Refuses to run unless the current directory has been granted. Extra
 arguments after \fB\-\-\fR pass through to the agent.
+.TP
+.B run \fR[\fB\-\-here\fR] \fIcommand\fR...
+Run a command as the sandbox account, in the sandbox's own home directory
+\(em which is where an agent CLI belongs, so this is how you install one:
+\fBasb run 'curl \-fsSL https://claude.ai/install.sh | bash'\fR.
+A single argument is passed to the sandbox's shell, so pipes and
+redirection work; several arguments are taken as a command and its
+arguments. With
+.BR \-\-here ,
+the command runs in the current directory instead, which must have been
+granted to the sandbox.
+.TP
+.B shell
+Open an interactive login shell as the sandbox account, in its home
+directory.
 .TP
 .B lockdown
 One-off hardening of your own account: remove group/other permissions

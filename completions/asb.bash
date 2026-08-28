@@ -12,7 +12,7 @@ _asb() {
     fi
 
     local config_root="${XDG_CONFIG_HOME:-$HOME/.config}/asb"
-    local commands="create delete use list add remove recover launch lockdown doctor help"
+    local commands="create delete use list add remove recover launch run shell lockdown doctor help"
 
     _asb_sandboxes() {
         local d
@@ -61,8 +61,11 @@ _asb() {
         add|remove)
             COMPREPLY=($(compgen -d -- "$cur"))
             ;;
+        run)
+            COMPREPLY=($(compgen -W "--here" -- "$cur"))
+            ;;
         create)
-            COMPREPLY=($(compgen -W "--agent" -- "$cur"))
+            COMPREPLY=($(compgen -W "--agent --install --no-install" -- "$cur"))
             ;;
     esac
 }
