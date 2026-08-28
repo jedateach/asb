@@ -17,4 +17,5 @@ package() {
     install -Dm0644 completions/asb.bash "$pkgdir/usr/share/bash-completion/completions/asb"
     install -Dm0644 completions/_asb "$pkgdir/usr/share/zsh/site-functions/_asb"
     install -Dm0644 README.md "$pkgdir/usr/share/doc/asb/README.md"
+    install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/asb/LICENSE"
 }

@@ -28,7 +28,7 @@ uninstall:
 dist:
 	rm -rf $(DIST)/asb-$(VERSION)
 	mkdir -p $(DIST)/asb-$(VERSION)
-	cp -r bin completions docs install.sh README.md $(DIST)/asb-$(VERSION)/
+	cp -r bin completions docs install.sh README.md LICENSE $(DIST)/asb-$(VERSION)/
 	sed -i 's/^ASB_VERSION=.*/ASB_VERSION="$(VERSION)"/' $(DIST)/asb-$(VERSION)/bin/asb
 	tar -C $(DIST) -czf $(DIST)/asb-$(VERSION).tar.gz asb-$(VERSION)
 	rm -rf $(DIST)/asb-$(VERSION)
@@ -50,6 +50,7 @@ deb:
 	install -m 0644 completions/asb.bash $(DIST)/debroot/usr/share/bash-completion/completions/asb
 	install -m 0644 completions/_asb $(DIST)/debroot/usr/share/zsh/vendor-completions/_asb
 	install -m 0644 README.md $(DIST)/debroot/usr/share/doc/asb/README.md
+	install -m 0644 LICENSE $(DIST)/debroot/usr/share/doc/asb/copyright
 	sed 's/@VERSION@/$(VERSION)/' packaging/deb/control.in > $(DIST)/debroot/DEBIAN/control
 	dpkg-deb --root-owner-group --build $(DIST)/debroot $(DIST)/asb_$(VERSION)_all.deb
 	rm -rf $(DIST)/debroot

@@ -28,6 +28,7 @@ install -Dm0644 completions/_asb %{buildroot}%{_datadir}/zsh/site-functions/_asb
 %{_mandir}/man1/asb.1*
 %{_datadir}/bash-completion/completions/asb
 %{_datadir}/zsh/site-functions/_asb
+%license LICENSE
 %doc README.md
 
 %changelog
