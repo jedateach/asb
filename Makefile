@@ -4,7 +4,7 @@ VERSION ?= 0.0.0
 PREFIX  ?= /usr/local
 DIST    := dist
 
-.PHONY: all lint smoke install uninstall dist deb rpm-srcs \
+.PHONY: all lint smoke install uninstall dist deb rpm pkgbuild release \
         test-deb test-tarball test-rpm test-arch test-all clean
 
 all: lint smoke
@@ -54,6 +54,31 @@ deb:
 	dpkg-deb --root-owner-group --build $(DIST)/debroot $(DIST)/asb_$(VERSION)_all.deb
 	rm -rf $(DIST)/debroot
 	@echo "built $(DIST)/asb_$(VERSION)_all.deb"
+
+# ---------------------------------------------------------------- release
+
+# Everything semantic-release's prepare step uploads: tarball, deb, rpm (built
+# in a Fedora container), and a PKGBUILD pinned to the tarball's checksum.
+URL ?= https://github.com/geeknz/asb
+
+rpm: dist
+	docker run --rm -v "$(CURDIR):/src" -w /src fedora:latest bash -c "\
+	  dnf install -y rpm-build >/dev/null && \
+	  mkdir -p /root/rpmbuild/SOURCES && \
+	  cp $(DIST)/asb-$(VERSION).tar.gz /root/rpmbuild/SOURCES/ && \
+	  sed 's/^Version:.*/Version:        $(VERSION)/' packaging/rpm/asb.spec > /tmp/asb.spec && \
+	  rpmbuild -bb /tmp/asb.spec && \
+	  cp /root/rpmbuild/RPMS/noarch/asb-$(VERSION)-*.rpm $(DIST)/"
+	@echo "built $(DIST)/asb-$(VERSION)-*.rpm"
+
+pkgbuild: dist
+	sed -e 's/^pkgver=.*/pkgver=$(VERSION)/' \
+	    -e 's|^url=.*|url="$(URL)"|' \
+	    -e "s/^sha256sums=.*/sha256sums=('$$(sha256sum $(DIST)/asb-$(VERSION).tar.gz | cut -d' ' -f1)')/" \
+	    packaging/aur/PKGBUILD > $(DIST)/PKGBUILD
+	@echo "built $(DIST)/PKGBUILD"
+
+release: dist deb rpm pkgbuild
 
 # ------------------------------------------------------- dockerized e2e
 

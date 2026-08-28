@@ -1,0 +1,67 @@
+{
+  "branches": ["main"],
+  "tagFormat": "v${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "parserOpts": {
+          "headerPattern": "^(?:\\S+\\s+)?(\\w*)(?:\\(([^)]*)\\))?!?: (.*)$",
+          "headerCorrespondence": ["type", "scope", "subject"],
+          "breakingHeaderPattern": "^(?:\\S+\\s+)?(\\w*)(?:\\(([^)]*)\\))?!: (.*)$"
+        },
+        "releaseRules": [
+          { "type": "build", "release": "patch" },
+          { "type": "docs", "release": "patch" },
+          { "type": "test", "release": "patch" },
+          { "type": "refactor", "release": "patch" },
+          { "type": "chore", "release": "patch" },
+          { "type": "ci", "release": "patch" }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "parserOpts": {
+          "headerPattern": "^(?:\\S+\\s+)?(\\w*)(?:\\(([^)]*)\\))?!?: (.*)$",
+          "headerCorrespondence": ["type", "scope", "subject"],
+          "breakingHeaderPattern": "^(?:\\S+\\s+)?(\\w*)(?:\\(([^)]*)\\))?!: (.*)$"
+        },
+        "presetConfig": {
+          "types": [
+            { "type": "feat", "section": "✨ Features" },
+            { "type": "fix", "section": "🐛 Bug Fixes" },
+            { "type": "build", "section": "📦 Packaging" },
+            { "type": "docs", "section": "📝 Documentation" },
+            { "type": "refactor", "section": "♻️ Refactoring" },
+            { "type": "test", "hidden": true },
+            { "type": "chore", "hidden": true },
+            { "type": "ci", "hidden": true }
+          ]
+        }
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "make release VERSION=${nextRelease.version}"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "dist/asb-*.tar.gz", "label": "Source tarball" },
+          { "path": "dist/asb_*_all.deb", "label": "Debian package" },
+          { "path": "dist/asb-*.rpm", "label": "RPM package" },
+          { "path": "dist/PKGBUILD", "label": "Arch PKGBUILD" }
+        ],
+        "successComment": false,
+        "failComment": false
+      }
+    ]
+  ]
+}

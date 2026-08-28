@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: make lint
+      - name: smoke tests
+        run: make smoke
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [deb, tarball, rpm, arch]
+    steps:
+      - uses: actions/checkout@v4
+      - name: dockerized install + e2e (${{ matrix.target }})
+        run: make test-${{ matrix.target }}
+
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # semantic-release 25 needs a newer node than the runner ships by default.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Derives the version from the commit log, builds every artifact through
+      # `make release`, then tags and publishes the GitHub release.
+      - name: Release
+        run: |
+          npx --yes -p semantic-release@25 \
+                    -p @semantic-release/exec@7 \
+                    -p conventional-changelog-conventionalcommits@10 \
+                    semantic-release
