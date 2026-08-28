@@ -119,7 +119,7 @@ Agents are defined in `~/.config/asb/agents.conf`, one per line:
 ```
 claude=claude --dangerously-skip-permissions
 claude-safe=claude
-hermes=hermes
+hermes=hermes --yolo
 ```
 
 Whether an agent runs with its own permission prompts disabled is your per-agent choice.

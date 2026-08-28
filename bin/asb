@@ -90,7 +90,7 @@ ensure_config() {
 # either way, so pick per agent what you are comfortable with.
 claude=claude --dangerously-skip-permissions
 claude-safe=claude
-hermes=hermes
+hermes=hermes --yolo
 EOF
     fi
 }
