@@ -12,7 +12,7 @@ DIST    := dist
 normalise_dirs = find $(1) -type d -exec chmod a-st,u=rwx,go=rx {} +
 
 .PHONY: all lint smoke install uninstall dist deb rpm pkgbuild release \
-        test-deb test-tarball test-rpm test-arch test-all clean
+        test-deb test-tarball test-rpm test-arch test-macos test-all clean
 
 all: lint smoke
 
@@ -107,6 +107,13 @@ test-rpm: dist
 test-arch: dist
 	docker build -f tests/docker/Dockerfile.arch --build-arg VERSION=$(VERSION) -t asb-test-arch .
 	docker run --rm asb-test-arch
+
+test-macos: smoke
+	@tmp=$$(mktemp -d); \
+	  trap 'rm -rf "$$tmp"' EXIT; \
+	  PREFIX="$$tmp" ./install.sh; \
+	  PATH="$$tmp/bin:$$PATH" XDG_CONFIG_HOME="$$tmp/config" \
+	    ASB_E2E_UNSAFE_OK=1 bash tests/e2e.sh
 
 test-all: test-deb test-tarball test-rpm test-arch
 

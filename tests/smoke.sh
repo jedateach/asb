@@ -60,9 +60,15 @@ t_fail "no SIGPIPE-prone pipelines in asb" \
 t "empty list exits 0" "$ASB" list
 
 # ACL round-trip on this filesystem (informational for the host)
-probe=$(mktemp -p "$scratch")
-if setfacl -m "u:$USER:r" "$probe" 2>/dev/null; then
-    t "ACL round-trip works in \$TMPDIR" grep -q "user:$USER" <(getfacl "$probe" 2>/dev/null)
+probe=$(mktemp "$scratch/probe.XXXXXX")
+if [[ "$(uname -s)" == Darwin ]]; then
+    if chmod +a "user:$USER allow read" "$probe" 2>/dev/null; then
+        t "macOS ACL round-trip works in \$TMPDIR" grep -Fq "user:$USER allow read" <(ls -le "$probe" 2>/dev/null)
+    else
+        echo "skip ACL round-trip (filesystem does not support ACLs)"
+    fi
+elif setfacl -m "u:$USER:r" "$probe" 2>/dev/null; then
+    t "POSIX ACL round-trip works in \$TMPDIR" grep -q "user:$USER" <(getfacl "$probe" 2>/dev/null)
 else
     echo "skip ACL round-trip (filesystem does not support ACLs)"
 fi

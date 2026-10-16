@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Full destructive end-to-end test for asb. RUN THIS INSIDE A CONTAINER —
-# it creates and deletes OS accounts and rewrites sudoers entries.
+# Full destructive end-to-end test for asb. RUN THIS INSIDE A DISPOSABLE
+# CONTAINER OR VM — it creates and deletes OS accounts and rewrites sudoers entries.
 # Expects to run as a non-root user with passwordless sudo, with asb
 # already installed on PATH.
 set -euo pipefail
 
 [[ -f /.dockerenv || -n "${ASB_E2E_UNSAFE_OK:-}" ]] || {
-    echo "refusing to run outside a container (set ASB_E2E_UNSAFE_OK=1 to override)" >&2
+    echo "refusing to run outside a container or disposable VM (set ASB_E2E_UNSAFE_OK=1 to override)" >&2
     exit 1
 }
 [[ "$(id -u)" -ne 0 ]] || { echo "run as a non-root user with sudo" >&2; exit 1; }
@@ -23,6 +23,20 @@ expect_fail() { if "$@" >/dev/null 2>&1; then bad "$* (expected failure)"; else 
 check() { if eval "$1" >/dev/null 2>&1; then ok "$2"; else bad "$3"; fi; }
 
 as_sb() { sudo -n -u "$SB" bash -c "$1"; }
+file_mode() {
+    if [[ "$(uname -s)" == Darwin ]]; then
+        stat -f "%Lp" "$1"
+    else
+        stat -c "%a" "$1"
+    fi
+}
+account_home() {
+    if [[ "$(uname -s)" == Darwin ]]; then
+        dscl . -read "/Users/$1" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //'
+    else
+        getent passwd "$1" | cut -d: -f6
+    fi
+}
 
 step "doctor before any sandbox exists"
 asb doctor || true   # informational; account checks don't apply yet
@@ -42,8 +56,8 @@ expect_ok sudo -n -u "$SB" true
 expect_ok sudo -n test -f "/etc/sudoers.d/asb-$SB"
 
 step "sandbox home is private"
-sb_home=$(getent passwd "$SB" | cut -d: -f6)
-check "[[ \"\$(stat -c %a '$sb_home')\" == 700 ]]" "home is 700" "home is $(stat -c %a "$sb_home")"
+sb_home=$(account_home "$SB")
+check "[[ \"\$(file_mode '$sb_home')\" == 700 ]]" "home is 700" "home is $(file_mode "$sb_home")"
 
 step "grant a project"
 chmod 700 "$HOME"
@@ -55,7 +69,7 @@ expect_ok asb add .
 
 step "lockdown closes world-readable files and keeps grants alive"
 expect_ok asb lockdown
-[[ "$(stat -c %a "$HOME/secret.txt")" == "600" ]] || bad "secret.txt not tightened"
+[[ "$(file_mode "$HOME/secret.txt")" == "600" ]] || bad "secret.txt not tightened"
 check "grep -q 'umask 077' '$HOME/.bashrc'" "umask set in .bashrc" "umask missing from .bashrc"
 
 step "sandbox can read/write the granted project"
@@ -116,7 +130,11 @@ expect_fail as_sb "cat $HOME/project/file.txt"
 step "recover re-applies grants"
 cd "$HOME/project" && asb add . >/dev/null
 # simulate ACL loss (backup/sync clobber); agent-owned files keep theirs
-setfacl -R -b "$HOME/project" 2>/dev/null || true
+if [[ "$(uname -s)" == Darwin ]]; then
+    chmod -RN "$HOME/project" 2>/dev/null || true
+else
+    setfacl -R -b "$HOME/project" 2>/dev/null || true
+fi
 expect_fail as_sb "cat $HOME/project/file.txt"
 expect_ok asb recover
 expect_ok as_sb "cat $HOME/project/file.txt"

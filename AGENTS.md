@@ -4,14 +4,16 @@ Guidance for AI coding agents working in this repository.
 
 ## What this is
 
-`asb` (agent sandbox) runs AI coding agents as dedicated locked-down Linux accounts
-("sandboxes"), granting them per-project directory access via POSIX ACLs. The kernel
-enforces the boundary. It is a Linux port of the macOS "second user account" approach.
+`asb` (agent sandbox) runs AI coding agents as dedicated locked-down OS accounts
+("sandboxes"), granting them per-project directory access via filesystem ACLs. The kernel
+enforces the boundary. Linux uses POSIX ACLs; macOS uses native filesystem ACLs and local
+accounts.
 
 The entire tool is one bash script: `bin/asb`. Everything else is packaging, completions,
-tests, and docs. Runtime dependencies are deliberately minimal: bash, coreutils, `acl`
-(setfacl/getfacl), `sudo`, and `useradd`/`userdel` (passwd/shadow-utils). **Do not add
-runtime dependencies** — no python, no jq, no curl. Docker is a dev-time dependency only.
+tests, and docs. Runtime dependencies are deliberately minimal: bash, core utilities, and
+sudo; Linux additionally needs `acl` and account tools (`useradd`/`userdel`), while macOS
+uses its built-in account tools. **Do not add runtime dependencies** — no python, no jq, no
+curl. Docker is a dev-time dependency only.
 
 ## Commands
 
@@ -22,6 +24,7 @@ make test-deb      # build .deb, install in ubuntu:24.04 container, run tests/e2
 make test-tarball  # same via install.sh on debian:stable-slim
 make test-rpm      # same via rpmbuild on fedora:latest
 make test-arch     # same via makepkg on archlinux:base-devel
+make test-macos    # native install and e2e on a disposable macOS runner
 make test-all      # all four
 make dist deb VERSION=x.y.z   # build release artifacts into dist/
 make release VERSION=x.y.z    # all four artifacts; what CI's release step runs
@@ -42,6 +45,7 @@ e2e failure, rebuild that one image and run it interactively, e.g.:
 - **ACL ordering is load-bearing**: on Linux the group permission bits of a file with
   an ACL _are_ the ACL mask. `chmod -R go-rwx` after `setfacl` would zero the mask and
   silently disable every grant. Always tighten (chmod) first, grant (setfacl) second.
+  macOS uses native ACL entries via `chmod +a`; do not use Linux ACL commands there.
 - **`pipefail` is on everywhere**: `bin/asb` and both test scripts run under
   `set -euo pipefail`. Never pipe into a consumer that exits early (`head`,
   `grep -q`) — the producer takes SIGPIPE, `pipefail` promotes 141 to the
