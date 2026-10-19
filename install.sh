@@ -21,7 +21,7 @@ if [ "${1:-}" = "uninstall" ]; then
 fi
 
 if [ "$(uname -s)" = Darwin ]; then
-    for dep in sudo dscl sysadminctl; do
+    for dep in sudo dscl; do
         command -v "$dep" >/dev/null 2>&1 || \
             echo "warning: '$dep' not found — asb requires macOS account tools and sudo" >&2
     done

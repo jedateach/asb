@@ -293,8 +293,22 @@ account_home() {  # account_home <account>
 
 create_account() {  # create_account <name>
     if [[ "$OS" == Darwin ]]; then
-        sudo sysadminctl -addUser "$1" -fullName "asb sandbox" \
-            -home "/Users/$1" -shell /bin/bash -password '*'
+        # dscl works non-interactively (sysadminctl needs a GUI session or
+        # admin credentials, which headless runners lack).
+        local uid gid
+        uid=$(dscl . -list /Users UniqueID | awk 'BEGIN{m=500} $2>m && $2<1000 {m=$2} END{print m+1}')
+        gid="$uid"
+        sudo dscl . -create "/Groups/$1" PrimaryGroupID "$gid" &&
+        sudo dscl . -create "/Users/$1" &&
+        sudo dscl . -create "/Users/$1" UserShell /bin/bash &&
+        sudo dscl . -create "/Users/$1" RealName "asb sandbox" &&
+        sudo dscl . -create "/Users/$1" UniqueID "$uid" &&
+        sudo dscl . -create "/Users/$1" PrimaryGroupID "$gid" &&
+        sudo dscl . -create "/Users/$1" NFSHomeDirectory "/Users/$1" &&
+        sudo dscl . -create "/Users/$1" IsHidden 1 &&
+        sudo dscl . -create "/Users/$1" Password '*' &&
+        sudo mkdir -p "/Users/$1" &&
+        sudo chown "$uid:$gid" "/Users/$1"
     else
         sudo useradd --create-home --user-group --shell /bin/bash \
             --comment "asb sandbox" "$1"
@@ -303,7 +317,8 @@ create_account() {  # create_account <name>
 
 delete_account() {  # delete_account <name> <home>
     if [[ "$OS" == Darwin ]]; then
-        sudo sysadminctl -deleteUser "$1"
+        sudo dscl . -delete "/Users/$1"
+        sudo dscl . -delete "/Groups/$1" 2>/dev/null || true
         if [[ -d "$2" ]]; then
             sudo rm -rf "$2"
         fi
@@ -737,7 +752,7 @@ cmd_doctor() {
     }
     info "asb doctor"
     if [[ "$OS" == Darwin ]]; then
-        check "macOS account tools available" command -v sysadminctl
+        check "macOS account tools available" command -v dscl
         check "directory services available" command -v dscl
     else
         check "setfacl available" command -v setfacl
