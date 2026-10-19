@@ -28,9 +28,17 @@ jobs:
       - name: dockerized install + e2e (${{ matrix.target }})
         run: make test-${{ matrix.target }}
 
+  macos:
+    needs: lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: native install and end-to-end tests
+        run: make test-macos
+
   release:
     if: github.ref == 'refs/heads/main'
-    needs: test
+    needs: [test, macos]
     runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ github.token }}

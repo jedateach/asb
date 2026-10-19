@@ -9,7 +9,8 @@ asb \- run AI coding agents in kernel-enforced sandboxes
 runs AI coding agents (Claude Code, Hermes, ...) as dedicated locked-down
 OS accounts, called
 .IR sandboxes .
-Project access is granted per directory with POSIX ACLs, so the kernel
+Project access is granted per directory with filesystem ACLs (POSIX ACLs on
+Linux and native ACLs on macOS), so the kernel
 \(em not application configuration \(em enforces what an agent can read
 or write. An agent inside a sandbox cannot reach your home directory,
 your credentials, or other projects.
@@ -108,10 +109,11 @@ The scoped passwordless switching rule.
 The sandbox boundary is standard Unix user separation: it does not
 provide network isolation, it does not protect secrets inside granted
 directories, and it is not a defense against kernel privilege-escalation
-exploits. Sync services such as Dropbox do not preserve POSIX ACLs; run
+exploits. Sync services such as Dropbox do not preserve ACLs; run
 .B asb recover
 if grants are lost.
 .SH SEE ALSO
 .BR setfacl (1),
 .BR getfacl (1),
+.BR chmod (1),
 .BR sudoers (5)

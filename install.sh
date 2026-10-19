@@ -20,10 +20,17 @@ if [ "${1:-}" = "uninstall" ]; then
     exit 0
 fi
 
-for dep in setfacl sudo; do
-    command -v "$dep" >/dev/null 2>&1 || \
-        echo "warning: '$dep' not found — install it (package: acl / sudo)" >&2
-done
+if [ "$(uname -s)" = Darwin ]; then
+    for dep in sudo dscl sysadminctl; do
+        command -v "$dep" >/dev/null 2>&1 || \
+            echo "warning: '$dep' not found — asb requires macOS account tools and sudo" >&2
+    done
+else
+    for dep in setfacl sudo; do
+        command -v "$dep" >/dev/null 2>&1 || \
+            echo "warning: '$dep' not found — install it (package: acl / sudo)" >&2
+    done
+fi
 
 install -d "$BINDIR"
 install -m 0755 "$here/bin/asb" "$BINDIR/asb"

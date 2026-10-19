@@ -15,6 +15,8 @@ USER="${USER:-$(id -un)}"
 CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/asb"
 CONFIG_FILE="$CONFIG_ROOT/config"
 AGENTS_FILE="$CONFIG_ROOT/agents.conf"
+OS=$(uname -s)
+SUDOERS_DIR="/etc/sudoers.d"
 
 SANDBOX_OVERRIDE=""
 ASSUME_YES="${ASB_ASSUME_YES:-}"
@@ -192,6 +194,27 @@ tighten_subtree() {
 apply_grants() {  # apply_grants <acct> <dir>
     local acct="$1" dir="$2"
     info "Granting $acct access to: $dir"
+    if [[ "$OS" == Darwin ]]; then
+        local path failed=0
+        local dir_perms="read,write,execute,delete,append,add_file,add_subdirectory,delete_child,list,search,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit"
+        local file_perms="read,write,execute,delete,append,readattr,writeattr,readextattr,writeextattr,readsecurity"
+        while IFS= read -r -d '' path; do
+            macos_acl_set "$path" "$acct" "user:$acct allow $dir_perms" || failed=1
+            macos_acl_set "$path" "$USER" "user:$USER allow $dir_perms" || failed=1
+        done < <(find "$dir" -type d -print0)
+        while IFS= read -r -d '' path; do
+            macos_acl_set "$path" "$acct" "user:$acct allow $file_perms" || failed=1
+            macos_acl_set "$path" "$USER" "user:$USER allow $file_perms" || failed=1
+        done < <(find "$dir" -type f -print0)
+        if [[ "$failed" -eq 1 ]]; then
+            warn "some files in $dir could not be updated (they may be owned by the sandbox)"
+        fi
+        local acl
+        acl=$(ls -lde "$dir" 2>/dev/null) || true
+        grep -Fq "user:$acct allow $dir_perms" <<< "$acl" || \
+            die "failed to apply ACLs on $dir (filesystem without ACL support?)"
+        return
+    fi
     # Files created by the sandbox are owned by its account and cannot be
     # re-ACL'ed by us; they already carry both ACLs via inheritance.
     setfacl -R -m "u:$acct:rwX,d:u:$acct:rwX,u:$USER:rwX,d:u:$USER:rwX" "$dir" 2>/dev/null || \
@@ -207,8 +230,90 @@ apply_grants() {  # apply_grants <acct> <dir>
 remove_grants() {  # remove_grants <acct> <dir>
     local acct="$1" dir="$2"
     info "Revoking $acct access to: $dir"
+    if [[ "$OS" == Darwin ]]; then
+        local path
+        while IFS= read -r -d '' path; do
+            macos_acl_remove "$path" "$acct"
+        done < <(find "$dir" -print0)
+        return
+    fi
     setfacl -R -x "u:$acct" "$dir" 2>/dev/null || true
     setfacl -R -d -x "u:$acct" "$dir" 2>/dev/null || true
+}
+
+macos_acl_remove() {  # macos_acl_remove <path> <account>
+    local path="$1" account="$2" entries index
+    # ls -le is macOS's interface for inspecting ACL entries.
+    # shellcheck disable=SC2012
+    entries=$(ls -lde "$path" 2>/dev/null | awk -v principal="user:$account " '
+        /^[[:space:]]*[0-9]+:/ {
+            line=$0
+            sub(/^[[:space:]]*[0-9]+: /, "", line)
+            if (index(line, principal) == 1) {
+                number=$1
+                sub(/:$/, "", number)
+                print number
+            }
+        }' | sort -rn) || return 0
+    while IFS= read -r index; do
+        if [[ -n "$index" ]]; then
+            chmod -a# "$index" "$path" 2>/dev/null || true
+        fi
+    done <<< "$entries"
+}
+
+macos_acl_set() {  # macos_acl_set <path> <account> <entry>
+    local path="$1" account="$2" entry="$3" acl
+    acl=$(ls -lde "$path" 2>/dev/null) || return 1
+    grep -Fq "$entry" <<< "$acl" && return 0
+    macos_acl_remove "$path" "$account"
+    chmod +a "$entry" "$path" 2>/dev/null
+}
+
+file_mode() {  # file_mode <path>
+    if [[ "$OS" == Darwin ]]; then
+        stat -f "%Lp" "$1"
+    else
+        stat -c "%a" "$1"
+    fi
+}
+
+canonical_dir() {  # canonical_dir <dir>
+    (cd -- "$1" 2>/dev/null && pwd -P)
+}
+
+account_home() {  # account_home <account>
+    if [[ "$OS" == Darwin ]]; then
+        dscl . -read "/Users/$1" NFSHomeDirectory 2>/dev/null |
+            sed 's/^NFSHomeDirectory: //'
+    else
+        getent passwd "$1" | cut -d: -f6
+    fi
+}
+
+create_account() {  # create_account <name>
+    if [[ "$OS" == Darwin ]]; then
+        sudo sysadminctl -addUser "$1" -fullName "asb sandbox" \
+            -home "/Users/$1" -shell /bin/bash -password '*'
+    else
+        sudo useradd --create-home --user-group --shell /bin/bash \
+            --comment "asb sandbox" "$1"
+    fi
+}
+
+delete_account() {  # delete_account <name> <home>
+    if [[ "$OS" == Darwin ]]; then
+        sudo sysadminctl -deleteUser "$1"
+        if [[ -d "$2" ]]; then
+            sudo rm -rf "$2"
+        fi
+    else
+        sudo userdel -r "$1"
+    fi
+}
+
+sudoers_group() {
+    [[ "$OS" == Darwin ]] && printf wheel || printf root
 }
 
 # Give the sandbox account traverse (--x) on every parent directory that it
@@ -218,11 +323,15 @@ apply_parent_traverse() {  # apply_parent_traverse <acct> <dir>
     while true; do
         current=$(dirname "$current")
         [[ "$current" == "/" ]] && break
-        mode=$(stat -c "%a" "$current" 2>/dev/null) || continue
+        mode=$(file_mode "$current" 2>/dev/null) || continue
         other="${mode: -1}"
         # world-execute already allows traversal
         (( other & 1 )) && continue
-        if ! setfacl -m "u:$acct:--x" "$current" 2>/dev/null; then
+        if [[ "$OS" == Darwin ]]; then
+            macos_acl_set "$current" "$acct" "user:$acct allow search,execute" || \
+                sudo -n chmod +a "user:$acct allow search,execute" "$current" 2>/dev/null || \
+                warn "could not add traverse permission on $current — $acct may be unable to reach the project"
+        elif ! setfacl -m "u:$acct:--x" "$current" 2>/dev/null; then
             if ! sudo -n setfacl -m "u:$acct:--x" "$current" 2>/dev/null; then
                 warn "could not add traverse permission on $current — $acct may be unable to reach the project"
             fi
@@ -237,7 +346,7 @@ check_parent_exposure() {  # check_parent_exposure <dir>
     while true; do
         current=$(dirname "$current")
         [[ "$current" == "/" || "$current" == "$HOME" ]] && break
-        mode=$(stat -c "%a" "$current" 2>/dev/null) || continue
+        mode=$(file_mode "$current" 2>/dev/null) || continue
         other="${mode: -1}"
         (( other & 4 )) && exposed+=("$current (mode $mode)")
     done
@@ -253,7 +362,7 @@ check_parent_exposure() {  # check_parent_exposure <dir>
 
 resolve_dir() {
     local dir="${1:-.}"
-    realpath "$dir" 2>/dev/null || die "cannot resolve directory: $dir"
+    canonical_dir "$dir" || die "cannot resolve directory: $dir"
 }
 
 # Refuse to work in a directory the sandbox has not been granted.
@@ -262,7 +371,7 @@ require_granted() {  # require_granted <sandbox> <dir>
     gf=$(grant_file "$sb")
     [[ -s "$gf" ]] || die "no directories granted to '$sb'. Run 'asb add' in your project first."
     while IFS= read -r entry; do
-        resolved=$(realpath "$entry" 2>/dev/null) || continue
+        resolved=$(canonical_dir "$entry") || continue
         if [[ "$dir" == "$resolved" || "$dir" == "$resolved"/* ]]; then
             return 0
         fi
@@ -332,11 +441,11 @@ cmd_create() {
         info "OS account '$name' already exists; adopting it."
     else
         info "Creating OS account '$name' (needs sudo)…"
-        sudo useradd --create-home --user-group --shell /bin/bash \
-            --comment "asb sandbox" "$name"
+        create_account "$name"
     fi
     local home
-    home=$(getent passwd "$name" | cut -d: -f6)
+    home=$(account_home "$name")
+    [[ -n "$home" ]] || die "could not determine home directory for OS account '$name'"
     sudo chmod 700 "$home"
 
     # Passwordless one-way door: invoker -> sandbox account. Nothing else.
@@ -345,7 +454,8 @@ cmd_create() {
     tmp=$(mktemp)
     printf '%s\n' "$rule" > "$tmp"
     sudo visudo -cf "$tmp" >/dev/null || { rm -f "$tmp"; die "generated sudoers rule failed validation"; }
-    sudo install -m 0440 -o root -g root "$tmp" "/etc/sudoers.d/asb-$name"
+    sudo mkdir -p "$SUDOERS_DIR"
+    sudo install -m 0440 -o root -g "$(sudoers_group)" "$tmp" "$SUDOERS_DIR/asb-$name"
     rm -f "$tmp"
 
     mkdir -p "$CONFIG_ROOT/$name"
@@ -398,10 +508,10 @@ cmd_delete() {
         [[ -d "$dir" ]] && remove_grants "$name" "$dir"
     done < "$(grant_file "$name")"
 
-    sudo rm -f "/etc/sudoers.d/asb-$name"
+    sudo rm -f "$SUDOERS_DIR/asb-$name"
     rm -rf "${CONFIG_ROOT:?}/$name"
     if [[ -n "$purge" ]] && id "$name" >/dev/null 2>&1; then
-        sudo userdel -r "$name"
+        delete_account "$name" "$(account_home "$name")"
         info "OS account '$name' and its home removed."
     fi
     if [[ "$(config_get "$CONFIG_FILE" default_sandbox)" == "$name" ]]; then
@@ -602,6 +712,9 @@ cmd_lockdown() {
     else
         files+=("$HOME/.profile")
     fi
+    if [[ "$OS" == Darwin ]]; then
+        files+=("$HOME/.zprofile" "$HOME/.zshrc")
+    fi
     for f in "${files[@]}"; do
         [[ -f "$f" ]] || touch "$f"
         if ! grep -qF "$marker" "$f"; then
@@ -623,20 +736,34 @@ cmd_doctor() {
         fi
     }
     info "asb doctor"
-    check "setfacl available" command -v setfacl
-    check "getfacl available" command -v getfacl
+    if [[ "$OS" == Darwin ]]; then
+        check "macOS account tools available" command -v sysadminctl
+        check "directory services available" command -v dscl
+    else
+        check "setfacl available" command -v setfacl
+        check "getfacl available" command -v getfacl
+        check "useradd available (needed for 'asb create')" command -v useradd
+    fi
     check "sudo available" command -v sudo
-    check "useradd available (needed for 'asb create')" command -v useradd
 
     # ACL round-trip on the current filesystem
     local probe
-    probe=$(mktemp -p "$PWD" .asb-doctor.XXXXXX 2>/dev/null) || probe=""
+    probe=$(mktemp "$PWD/.asb-doctor.XXXXXX" 2>/dev/null) || probe=""
     if [[ -n "$probe" ]]; then
-        if setfacl -m "u:$USER:r" "$probe" 2>/dev/null &&
-           grep -q "user:$USER" <<< "$(getfacl "$probe" 2>/dev/null)"; then
-            printf '  ok    filesystem at %s supports POSIX ACLs\n' "$PWD"; ok=$((ok+1))
+        if [[ "$OS" == Darwin ]]; then
+            if chmod +a "user:$USER allow read" "$probe" 2>/dev/null &&
+               grep -Fq "user:$USER allow read" <<< "$(ls -lde "$probe" 2>/dev/null)"; then
+                printf '  ok    filesystem at %s supports macOS ACLs\n' "$PWD"; ok=$((ok+1))
+            else
+                printf '  FAIL  filesystem at %s does not support macOS ACLs\n' "$PWD"; fail=$((fail+1))
+            fi
         else
-            printf '  FAIL  filesystem at %s does not support POSIX ACLs (NFS/FAT?)\n' "$PWD"; fail=$((fail+1))
+            if setfacl -m "u:$USER:r" "$probe" 2>/dev/null &&
+               grep -q "user:$USER" <<< "$(getfacl "$probe" 2>/dev/null)"; then
+                printf '  ok    filesystem at %s supports POSIX ACLs\n' "$PWD"; ok=$((ok+1))
+            else
+                printf '  FAIL  filesystem at %s does not support POSIX ACLs (NFS/FAT?)\n' "$PWD"; fail=$((fail+1))
+            fi
         fi
         rm -f "$probe"
     fi

@@ -1,13 +1,14 @@
 # asb — agent sandbox
 
-Run AI coding agents (Claude Code, Hermes, …) inside kernel-enforced sandboxes on Linux.
+Run AI coding agents (Claude Code, Hermes, …) inside kernel-enforced sandboxes on Linux and macOS.
 
 `asb` gives each agent a dedicated locked-down OS account with an empty home directory,
 then grants it access to specific project directories using POSIX ACLs. The agent can
 disable every guardrail it controls; it can't disable the kernel. Your `~/.ssh`,
 `~/.aws`, browser profiles, and other projects are simply `Permission denied`.
 
-This is a Linux port of the ["second user account" approach for macOS][article].
+On Linux, `asb` uses POSIX ACLs and Linux accounts. On macOS, it uses native filesystem
+ACLs and local accounts, following the ["second user account" approach][article].
 
 [article]: https://medium.com/@bradnz/sandboxing-claude-code-on-macos-with-a-second-user-account-a16070e1663e
 
@@ -24,7 +25,7 @@ limited to what you granted. What you do not get:
   sandbox. Layer a firewall if exfiltration is in your threat model.
 - **Protection for secrets _inside_ a granted project.** A grant is `rwX` over the whole
   tree — `.env`, tokens in `.git/config`, service keys and all. Keep them out of it.
-- **Protection from the rest of the system.** A sandbox is an ordinary Linux account,
+- **Protection from the rest of the system.** A sandbox is an ordinary OS account,
   not a container: it can still read anything world-readable (`/etc`, `/tmp`, other
   users' world-readable files) and see the process list.
 - **Resistance to a real exploit.** Local privilege escalation defeats any account
@@ -47,8 +48,8 @@ were.**
   server, a shared group directory, a backup agent running as another account — this
   will break it.
 - `asb add` runs the same `chmod -R go-rwx` over the project before granting.
-- `asb delete --purge` runs `userdel -r`: the sandbox's home directory, and anything an
-  agent left in it, is gone.
+- `asb delete --purge` removes the sandbox account and its home directory, including
+  anything an agent left in it.
 
 **ACLs are fragile in transit.** Dropbox and most sync/backup tools, `rsync` without
 `-A`, and `tar` without `--acls` drop them silently — grants then disappear with no
@@ -78,7 +79,17 @@ sudo ./install.sh          # PREFIX=/usr/local by default
 **Fedora / RHEL** — install the `.rpm` from the release.
 **Arch** — a `PKGBUILD` is attached to each release (`makepkg -si`).
 
-Runtime dependencies (present on most systems): `bash`, `acl`, `sudo`, `passwd`.
+**macOS** — install from the release tarball (no Homebrew formula is required):
+
+```sh
+tar xzf asb-<version>.tar.gz
+cd asb-<version>
+sudo ./install.sh
+```
+
+Runtime dependencies on Linux: `bash`, `acl`, `sudo`, and account-management tools
+(`passwd` / `shadow-utils`, depending on the distribution). macOS uses its built-in
+`bash`, `sudo`, filesystem ACL, and local account-management tools.
 
 ## Quick start
 
@@ -141,9 +152,10 @@ asb -s claude-x shell          # or poke around by hand
 - `asb create <name>` makes a standard OS account with a `700` home and installs a
   scoped sudoers rule (`you ALL=(<name>) NOPASSWD: ALL`) — a one-way, passwordless door
   into the sandbox. The sandbox gets no sudo rights of its own.
-- `asb add` tightens the project (`chmod -R go-rwx`), grants the sandbox `rwX` with
-  inheriting default ACLs (`setfacl`), gives it traverse-only (`--x`) permission on
-  parent directories, and warns if a world-readable parent would leak sibling names.
+- `asb add` tightens the project (`chmod -R go-rwx`), grants the sandbox read/write access
+  with inheriting ACLs (`setfacl` on Linux, native ACLs on macOS), gives it traverse-only
+  permission on parent directories, and warns if a world-readable parent would leak
+  sibling names.
 - `asb launch` re-checks the grant list, then runs the agent as the sandbox account in
   your current directory. `asb run` and `asb shell` use the same door for anything else
   you need to do inside the sandbox (installing an agent, checking a version).
